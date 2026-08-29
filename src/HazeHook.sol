@@ -31,7 +31,7 @@ interface ISwapRandomnessConsumer {
 ///      boundary an attacker must plan around, not the settlement price itself.
 ///      A future version could achieve true price-targeting by deriving
 ///      amountSpecified from the chosen candidate price via SqrtPriceMath.
-contract ProtectedSwapHook is BaseHook {
+contract HazeHook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
 

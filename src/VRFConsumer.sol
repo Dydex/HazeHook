@@ -7,7 +7,7 @@ import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/V
 /// @notice Chainlink VRF v2.5 adapter for protected swaps.
 /// @dev The callback only records randomness. Pool settlement must happen in a
 ///      separate user or relayer transaction.
-contract SwapRandomnessConsumer is VRFConsumerBaseV2Plus {
+contract VRFConsumer is VRFConsumerBaseV2Plus {
     error NotHook();
     error UnknownRequest(uint256 requestId);
     error RequestAlreadyFulfilled(uint256 requestId);
