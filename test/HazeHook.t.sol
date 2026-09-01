@@ -8,6 +8,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {HazeHook, ISwapRandomnessConsumer} from "../src/HazeHook.sol";
 
 contract TestRandomnessConsumer is ISwapRandomnessConsumer {
@@ -143,6 +144,149 @@ contract HazeHookTest is Test {
 
         (,,,,,,,, bool settled) = hook.pendingSwaps(swapId);
         assertTrue(settled);
+    }
+
+    function testCannotSettleAlreadyCancelledSwap() public {
+        vm.prank(trader);
+        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        vm.warp(block.timestamp + 1 days + 1);
+
+        vm.prank(trader);
+        hook.cancelExpiredSwap(swapId);
+
+        randomness.fulfill(swapId, 2);
+        vm.prank(trader);
+        vm.expectRevert(HazeHook.AlreadySettled.selector);
+        hook.settleSwap(swapId);
+    }
+
+    function testCannotSettleAfterDeadline() public {
+        vm.prank(trader);
+        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        randomness.fulfill(swapId, 2);
+        vm.warp(block.timestamp + 1 days + 1);
+
+        vm.prank(trader);
+        vm.expectRevert(HazeHook.SwapExpired.selector);
+        hook.settleSwap(swapId);
+    }
+
+    function testOnlyTraderCanCancel() public {
+        vm.prank(trader);
+        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        vm.warp(block.timestamp + 1 days + 1);
+
+        vm.expectRevert(HazeHook.NotTrader.selector);
+        hook.cancelExpiredSwap(swapId);
+    }
+
+    function testCannotCancelBeforeExpiry() public {
+        vm.prank(trader);
+        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+
+        vm.prank(trader);
+        vm.expectRevert(HazeHook.CannotCancelBeforeExpiry.selector);
+        hook.cancelExpiredSwap(swapId);
+    }
+
+    function testCannotCancelAlreadySettledSwap() public {
+        vm.prank(trader);
+        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        vm.warp(block.timestamp + 1 days + 1);
+
+        vm.prank(trader);
+        hook.cancelExpiredSwap(swapId);
+
+        vm.prank(trader);
+        vm.expectRevert(HazeHook.AlreadySettled.selector);
+        hook.cancelExpiredSwap(swapId);
+    }
+
+    function testCannotCommitWithPastOrCurrentDeadline() public {
+        vm.prank(trader);
+        vm.expectRevert(HazeHook.InvalidDeadline.selector);
+        hook.commitSwap(key, true, -1e18, block.timestamp);
+    }
+
+    function testCannotCommitAgainstInitializedPoolWithNoLiquidity() public {
+        // Distinct from testCannotCommitAgainstUninitializedPool: this pool HAS a
+        // real price (sqrtPriceX96 != 0), so it passes the PoolNotInitialized
+        // check, but has zero active liquidity — estimatedImpactBps can't compute
+        // a meaningful impact against zero liquidity, so it returns 0bps, which
+        // correctly falls back to BelowRiskThreshold rather than a division/library
+        // revert deeper in SqrtPriceMath.
+        PoolId poolId = key.toId();
+        bytes32 stateSlot = StateLibrary._getPoolStateSlot(poolId);
+        bytes32 liquiditySlot = bytes32(uint256(stateSlot) + StateLibrary.LIQUIDITY_OFFSET);
+        vm.mockCall(
+            address(1),
+            abi.encodeWithSignature("extsload(bytes32)", liquiditySlot),
+            abi.encode(bytes32(uint256(0)))
+        );
+
+        vm.prank(trader);
+        vm.expectRevert(abi.encodeWithSelector(HazeHook.BelowRiskThreshold.selector, 0));
+        hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+    }
+
+    function testEstimatedImpactIsZeroForZeroAmount() public view {
+        assertEq(hook.estimatedImpactBps(key, true, 0), 0);
+    }
+
+    function testDirectionalCandidatePriceRevertsOnOverflow() public {
+        // basePrice at TickMath's max valid sqrt price sits close enough to
+        // type(uint160).max that even the largest upward (one-for-zero) offset —
+        // the last candidate, +20bps — pushes the adjusted price past
+        // type(uint160).max, hitting the "Price overflow" guard.
+        uint8 topCandidateIndex = hook.NUM_CANDIDATES() - 1;
+        vm.expectRevert("Price overflow");
+        hook.directionalCandidatePrice(TickMath.MAX_SQRT_PRICE, topCandidateIndex, false);
+    }
+
+    function testCannotCommitAgainstUninitializedPool() public {
+        // A pool whose slot0 has never been written reads back all-zero from
+        // extsload, so sqrtPriceX96 == 0.
+        PoolKey memory uninitKey = PoolKey({
+            currency0: Currency.wrap(address(0x3000)),
+            currency1: Currency.wrap(address(0x4000)),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: hook
+        });
+        PoolId uninitId = uninitKey.toId();
+        bytes32 stateSlot = StateLibrary._getPoolStateSlot(uninitId);
+        vm.mockCall(
+            address(1),
+            abi.encodeWithSignature("extsload(bytes32)", stateSlot),
+            abi.encode(bytes32(0))
+        );
+
+        vm.prank(trader);
+        vm.expectRevert(HazeHook.PoolNotInitialized.selector);
+        hook.commitSwap(uninitKey, true, -1e18, block.timestamp + 1 days);
+    }
+
+    function testDirectionalCandidatePriceRejectsOutOfRangeIndex() public {
+        // Compute the out-of-range index BEFORE arming expectRevert: it's a
+        // staticcall in its own right, and expectRevert only covers the very
+        // next call — evaluating it inline as an argument would consume the
+        // expectation on that (non-reverting) call instead of the real one.
+        uint8 outOfRangeIndex = hook.NUM_CANDIDATES();
+        vm.expectRevert("Invalid candidate");
+        hook.directionalCandidatePrice(1e18, outOfRangeIndex, true);
+    }
+
+    function testRecommendedSlippageTracksImpactAndCapsAt500() public view {
+        // Mocked pool: 1e9 liquidity. A moderate exact-input amount produces a
+        // real, sub-cap impact — recommendation should be impact + 5bps.
+        uint256 impact = hook.estimatedImpactBps(key, true, -1e17);
+        uint256 recommended = hook.recommendedSlippageBps(key, true, -1e17);
+        assertEq(recommended, impact + 5);
+
+        // A very large amount against the same shallow liquidity blows past the
+        // 500bps cap.
+        uint256 recommendedHuge = hook.recommendedSlippageBps(key, true, -1e21);
+        assertEq(recommendedHuge, 500);
     }
 
     function testCandidatePricesStayWithinBand() public view {
