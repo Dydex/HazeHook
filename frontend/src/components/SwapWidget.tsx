@@ -33,6 +33,7 @@ import {
 
 const DEADLINE_SECONDS = 30 * 60; // 30 minutes from commit
 const PERCENTAGES = [25, 50, 75, 100];
+const SLIPPAGE_PRESETS_BPS = [10, 50, 100]; // 0.1% / 0.5% / 1%
 
 function TokenPill({ symbol, color }: { symbol: string; color: string }) {
   return (
@@ -54,6 +55,8 @@ export function SwapWidget() {
   const [commitDeadline, setCommitDeadline] = useState<bigint | null>(null);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const [rateFlipped, setRateFlipped] = useState(false);
+  const [customSlippageBps, setCustomSlippageBps] = useState<number | null>(null);
+  const [customSlippageInput, setCustomSlippageInput] = useState("");
 
   const amountSpecified = submittedAmount ? -parseUnits(submittedAmount || "0", 18) : undefined;
   const inputToken = zeroForOne ? TEST_TOKEN_ADDRESS : WETH_ADDRESS;
@@ -104,7 +107,7 @@ export function SwapWidget() {
     const sqrtPriceX96 = sqrtPriceX96FromSlot0(slot0);
     const wethPerHtt = (Number(sqrtPriceX96) / 2 ** 96) ** 2;
     rateText = rateFlipped
-      ? `1 WETH = ${(1 / wethPerHtt).toFixed(4)} HTT`
+      ? `1 WETH = ${(1 / wethPerHtt).toFixed(2)} HTT`
       : `1 HTT = ${wethPerHtt.toFixed(4)} WETH`;
   }
 
@@ -123,6 +126,10 @@ export function SwapWidget() {
   const impactBps = data?.[0]?.result as bigint | undefined;
   const isProtected = data?.[1]?.result as boolean | undefined;
   const recommendedSlippageBps = data?.[2]?.result as bigint | undefined;
+
+  // User-selected slippage overrides the hook's recommendation once set;
+  // falls back to the recommendation (or a sane 0.5% default) otherwise.
+  const effectiveSlippageBps = BigInt(customSlippageBps ?? Number(recommendedSlippageBps ?? BigInt(50)));
 
   // --- Expected output — only resolvable for fast-lane amounts. The Quoter
   // simulates a real swap through the pool, which goes through HazeHook's
@@ -226,12 +233,10 @@ export function SwapWidget() {
   function doFastSwap() {
     if (amountSpecified === undefined || !address) return;
     const amountIn = -amountSpecified;
-    // Use the hook's own recommended slippage against the Quoter's exact
-    // quote for a real minimum-out — not zero, not a guess.
+    // Uses the user-selected slippage tolerance (falls back to the hook's
+    // recommendation) against the Quoter's exact quote for a real minimum-out.
     const amountOutMin =
-      expectedOut !== undefined && recommendedSlippageBps !== undefined
-        ? expectedOut - (expectedOut * recommendedSlippageBps) / BigInt(10_000)
-        : BigInt(0);
+      expectedOut !== undefined ? expectedOut - (expectedOut * effectiveSlippageBps) / BigInt(10_000) : BigInt(0);
     const deadline = BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
     fastSwap.writeContract({
       address: V4_ROUTER_ADDRESS,
@@ -352,9 +357,7 @@ export function SwapWidget() {
   ) {
     const amountIn = -amountSpecified;
     const amountOutMin =
-      expectedOut !== undefined && recommendedSlippageBps !== undefined
-        ? expectedOut - (expectedOut * recommendedSlippageBps) / BigInt(10_000)
-        : BigInt(0);
+      expectedOut !== undefined ? expectedOut - (expectedOut * effectiveSlippageBps) / BigInt(10_000) : BigInt(0);
     nextAction = {
       to: V4_ROUTER_ADDRESS,
       data: encodeFunctionData({
@@ -496,7 +499,7 @@ export function SwapWidget() {
           <span className={insufficientBalance ? "text-red-400" : "text-transparent"}>Insufficient balance</span>
           {address && currentBalance !== undefined && (
             <span className="text-zinc-500">
-              Balance: {Number(formatUnits(currentBalance, 18)).toFixed(4)} {inputSymbol}
+              Balance: {Number(formatUnits(currentBalance, 18)).toFixed(inputSymbol === "WETH" ? 4 : 2)} {inputSymbol}
             </span>
           )}
         </div>
@@ -577,6 +580,45 @@ export function SwapWidget() {
             <span>Recommended slippage</span>
             <span className="text-zinc-100">{Number(recommendedSlippageBps) / 100}%</span>
           </div>
+
+          {isProtected === false && (
+            <div className="flex items-center justify-between">
+              <span className="text-zinc-400">Slippage tolerance</span>
+              <div className="flex items-center gap-1">
+                {SLIPPAGE_PRESETS_BPS.map((bps) => (
+                  <button
+                    key={bps}
+                    onClick={() => {
+                      setCustomSlippageBps(bps);
+                      setCustomSlippageInput("");
+                    }}
+                    className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+                      customSlippageBps === bps
+                        ? "border-cyan-400/60 bg-cyan-400/10 text-cyan-300"
+                        : "border-white/[.12] text-zinc-400 hover:border-cyan-400/40 hover:text-cyan-300"
+                    }`}
+                  >
+                    {bps / 100}%
+                  </button>
+                ))}
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="Custom"
+                  value={customSlippageInput}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setCustomSlippageInput(v);
+                    const parsed = Number(v);
+                    if (v !== "" && !Number.isNaN(parsed) && parsed >= 0) setCustomSlippageBps(Math.round(parsed * 100));
+                  }}
+                  className="w-14 rounded-md border border-white/[.12] bg-transparent px-1.5 py-1 text-right font-mono text-[11px] text-zinc-100 outline-none focus:border-cyan-400/40"
+                />
+                <span className="text-zinc-500">%</span>
+              </div>
+            </div>
+          )}
           <div
             className={`mt-1 flex items-center gap-2 rounded-lg border px-3 py-2 uppercase tracking-widest ${
               isProtected

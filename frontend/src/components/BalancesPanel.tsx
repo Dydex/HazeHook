@@ -1,35 +1,39 @@
-import { useEffect } from "react";
-import { formatUnits, parseEther, parseUnits } from "viem";
 import { useAccount, useReadContracts, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
-import { ERC20_ABI, MOCK_TOKEN_ABI, POOL_KEY, TEST_TOKEN_ADDRESS, WETH9_ABI, WETH_ADDRESS } from "@/lib/contracts";
+import { parseUnits } from "viem";
+import {
+  EXTSLOAD_ABI,
+  MOCK_TOKEN_ABI,
+  POOL_KEY,
+  POOL_MANAGER_ADDRESS,
+  poolLiquiditySlot,
+  poolStateSlot,
+  reservesForLiquidity,
+  sqrtPriceX96FromSlot0,
+  TEST_TOKEN_ADDRESS,
+  tickFromSlot0,
+} from "@/lib/contracts";
 
 const MINT_HTT_AMOUNT = parseUnits("10", 18); // 10 HTT
-const WRAP_WETH_AMOUNT = parseEther("0.005"); // 0.005 Sepolia ETH -> WETH
 
 export function BalancesPanel() {
   const { address, isConnected } = useAccount();
 
-  const { data, isFetching, refetch } = useReadContracts({
-    contracts: address
-      ? [
-          { address: TEST_TOKEN_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [address] },
-          { address: WETH_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [address] },
-        ]
-      : [],
-    query: { enabled: !!address },
-  });
-
-  const httBalance = data?.[0]?.result as bigint | undefined;
-  const wethBalance = data?.[1]?.result as bigint | undefined;
-
   const mint = useWriteContract();
-  const wrap = useWriteContract();
   const mintReceipt = useWaitForTransactionReceipt({ hash: mint.data });
-  const wrapReceipt = useWaitForTransactionReceipt({ hash: wrap.data });
 
-  useEffect(() => {
-    if (mintReceipt.isSuccess || wrapReceipt.isSuccess) refetch();
-  }, [mintReceipt.isSuccess, wrapReceipt.isSuccess, refetch]);
+  const { data: poolState } = useReadContracts({
+    contracts: [
+      { address: POOL_MANAGER_ADDRESS, abi: EXTSLOAD_ABI, functionName: "extsload", args: [poolStateSlot()] },
+      { address: POOL_MANAGER_ADDRESS, abi: EXTSLOAD_ABI, functionName: "extsload", args: [poolLiquiditySlot()] },
+    ],
+    query: { refetchInterval: 15_000 },
+  });
+  const slot0 = poolState?.[0]?.result;
+  const liquiditySlot = poolState?.[1]?.result;
+  const reserves =
+    slot0 && liquiditySlot
+      ? reservesForLiquidity(BigInt(liquiditySlot), sqrtPriceX96FromSlot0(slot0), tickFromSlot0(slot0))
+      : undefined;
 
   function mintHtt() {
     if (!address) return;
@@ -41,45 +45,15 @@ export function BalancesPanel() {
     });
   }
 
-  function wrapWeth() {
-    wrap.writeContract({
-      address: WETH_ADDRESS,
-      abi: WETH9_ABI,
-      functionName: "deposit",
-      value: WRAP_WETH_AMOUNT,
-    });
-  }
-
   return (
     <div className="flex flex-col gap-4">
       <div className="rounded-2xl border border-white/[.08] bg-white/[.02] p-5">
-        <span className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">Your balances</span>
+        <span className="font-mono text-[11px] uppercase tracking-widest text-zinc-500">Faucet</span>
 
         {!isConnected ? (
-          <p className="mt-3 text-sm text-zinc-500">Connect a wallet to see your balances.</p>
+          <p className="mt-3 text-sm text-zinc-500">Connect a wallet to mint test tokens.</p>
         ) : (
-          <div className="mt-3 flex flex-col gap-2 font-mono text-sm">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2 text-zinc-300">
-                <span className="h-2 w-2 rounded-full bg-lime-400" /> HTT
-              </span>
-              <span className="text-zinc-100">
-                {httBalance !== undefined ? Number(formatUnits(httBalance, 18)).toFixed(4) : isFetching ? "…" : "—"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2 text-zinc-300">
-                <span className="h-2 w-2 rounded-full bg-cyan-400" /> WETH
-              </span>
-              <span className="text-zinc-100">
-                {wethBalance !== undefined ? Number(formatUnits(wethBalance, 18)).toFixed(4) : isFetching ? "…" : "—"}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {isConnected && (
-          <div className="mt-4 flex flex-col gap-2">
+          <div className="mt-3 flex flex-col gap-2">
             <button
               onClick={mintHtt}
               disabled={mint.isPending || mintReceipt.isLoading}
@@ -87,18 +61,7 @@ export function BalancesPanel() {
             >
               {mint.isPending || mintReceipt.isLoading ? "Minting…" : "Mint 10 HTT"}
             </button>
-            <button
-              onClick={wrapWeth}
-              disabled={wrap.isPending || wrapReceipt.isLoading}
-              className="flex h-9 items-center justify-center rounded-lg border border-cyan-400/40 bg-cyan-400/10 font-mono text-xs font-bold uppercase tracking-widest text-cyan-300 transition-colors hover:bg-cyan-400/20 disabled:opacity-50"
-            >
-              {wrap.isPending || wrapReceipt.isLoading ? "Wrapping…" : "Wrap 0.005 ETH → WETH"}
-            </button>
-            {(mint.error || wrap.error) && (
-              <p className="font-mono text-xs text-red-400">
-                {(mint.error ?? wrap.error)?.message.split("\n")[0]}
-              </p>
-            )}
+            {mint.error && <p className="font-mono text-xs text-red-400">{mint.error.message.split("\n")[0]}</p>}
           </div>
         )}
       </div>
@@ -119,6 +82,23 @@ export function BalancesPanel() {
             <span className="text-zinc-100">{POOL_KEY.tickSpacing}</span>
           </div>
         </div>
+
+        {reserves && (
+          <div className="mt-3 flex flex-col gap-2 border-t border-white/[.08] pt-3 font-mono text-sm">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-zinc-300">
+                <span className="h-2 w-2 rounded-full bg-lime-400" /> HTT in pool
+              </span>
+              <span className="text-zinc-100">{reserves.htt.toFixed(2)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-zinc-300">
+                <span className="h-2 w-2 rounded-full bg-cyan-400" /> WETH in pool
+              </span>
+              <span className="text-zinc-100">{reserves.weth.toFixed(4)}</span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
