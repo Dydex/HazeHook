@@ -39,8 +39,10 @@ contract HazeHookTest is Test {
     TestRandomnessConsumer randomness;
     PoolKey key;
     address trader = address(0xBEEF);
+    uint256 bond;
 
     function setUp() public {
+        vm.deal(trader, 10 ether); // covers COMMIT_BOND across every test
         randomness = new TestRandomnessConsumer();
         address flags = address(uint160(Hooks.BEFORE_SWAP_FLAG) ^ (0x5151 << 144));
         deployCodeTo(
@@ -49,6 +51,11 @@ contract HazeHookTest is Test {
             flags
         );
         hook = HazeHook(flags);
+        // Read once here (not inline in a pranked call): vm.prank only applies
+        // to the very next external call, and hook.COMMIT_BOND() is itself a
+        // call — reading it inline as a {value: ...} argument would consume the
+        // prank on that read instead of on commitSwap.
+        bond = hook.COMMIT_BOND();
 
         key = PoolKey({
             currency0: Currency.wrap(address(0x1000)),
@@ -84,7 +91,7 @@ contract HazeHookTest is Test {
 
     function testCommitStoresPendingSwapAndRequestsRandomness() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
 
         (address owner,,,,,, uint256 requestId, uint256 deadline, bool settled) = hook.pendingSwaps(swapId);
         assertEq(owner, trader);
@@ -93,22 +100,66 @@ contract HazeHookTest is Test {
         assertFalse(settled);
     }
 
+    function testCannotCommitWithNoBond() public {
+        vm.prank(trader);
+        vm.expectRevert(abi.encodeWithSelector(HazeHook.IncorrectBondAmount.selector, bond, 0));
+        hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+    }
+
+    function testCannotCommitWithWrongBondAmount() public {
+        vm.prank(trader);
+        vm.expectRevert(abi.encodeWithSelector(HazeHook.IncorrectBondAmount.selector, bond, bond - 1));
+        hook.commitSwap{value: bond - 1}(key, true, -1e18, block.timestamp + 1 days);
+
+        vm.prank(trader);
+        vm.expectRevert(abi.encodeWithSelector(HazeHook.IncorrectBondAmount.selector, bond, bond + 1));
+        hook.commitSwap{value: bond + 1}(key, true, -1e18, block.timestamp + 1 days);
+    }
+
+    function testBondIsLockedUntilCancelThenWithdrawable() public {
+        vm.prank(trader);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
+
+        // Bond isn't claimable while the swap is still pending.
+        assertEq(hook.unclaimedBond(trader), 0);
+        vm.prank(trader);
+        vm.expectRevert(HazeHook.NoBondToWithdraw.selector);
+        hook.withdrawBond();
+
+        vm.warp(block.timestamp + 1 days + 1);
+        vm.prank(trader);
+        hook.cancelExpiredSwap(swapId);
+
+        assertEq(hook.unclaimedBond(trader), bond);
+
+        uint256 balanceBefore = trader.balance;
+        vm.prank(trader);
+        hook.withdrawBond();
+        assertEq(trader.balance, balanceBefore + bond);
+        assertEq(hook.unclaimedBond(trader), 0);
+
+        // Can't withdraw the same bond twice.
+        vm.prank(trader);
+        vm.expectRevert(HazeHook.NoBondToWithdraw.selector);
+        hook.withdrawBond();
+    }
+
     function testCannotCommitExactOutputSwap() public {
         vm.prank(trader);
         vm.expectRevert(HazeHook.ExactInputOnly.selector);
-        hook.commitSwap(key, true, 1e18, block.timestamp + 1 days);
+        hook.commitSwap{value: bond}(key, true, 1e18, block.timestamp + 1 days);
     }
 
     function testCannotCommitSwapBelowRiskThreshold() public {
         // Against the mocked 1e9 liquidity, a tiny amount rounds down to 0bps impact.
         vm.prank(trader);
         vm.expectRevert(abi.encodeWithSelector(HazeHook.BelowRiskThreshold.selector, 0));
-        hook.commitSwap(key, true, -1e14, block.timestamp + 1 days);
+        hook.commitSwap{value: bond}(key, true, -1e14, block.timestamp + 1 days);
     }
 
     function testCannotSettleBeforeRandomness() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
 
         vm.prank(trader);
         vm.expectRevert(HazeHook.RandomnessNotReady.selector);
@@ -117,7 +168,7 @@ contract HazeHookTest is Test {
 
     function testSettlementUsesFulfilledCandidate() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
         randomness.fulfill(swapId, 4);
 
         vm.prank(trader);
@@ -127,7 +178,7 @@ contract HazeHookTest is Test {
 
     function testOnlyTraderCanSettle() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
         randomness.fulfill(swapId, 2);
 
         vm.expectRevert(HazeHook.NotTrader.selector);
@@ -136,7 +187,7 @@ contract HazeHookTest is Test {
 
     function testExpiredSwapCanBeCancelledByTrader() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
         vm.warp(block.timestamp + 1 days + 1);
 
         vm.prank(trader);
@@ -148,7 +199,7 @@ contract HazeHookTest is Test {
 
     function testCannotSettleAlreadyCancelledSwap() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
         vm.warp(block.timestamp + 1 days + 1);
 
         vm.prank(trader);
@@ -162,7 +213,7 @@ contract HazeHookTest is Test {
 
     function testCannotSettleAfterDeadline() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
         randomness.fulfill(swapId, 2);
         vm.warp(block.timestamp + 1 days + 1);
 
@@ -173,7 +224,7 @@ contract HazeHookTest is Test {
 
     function testOnlyTraderCanCancel() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
         vm.warp(block.timestamp + 1 days + 1);
 
         vm.expectRevert(HazeHook.NotTrader.selector);
@@ -182,7 +233,7 @@ contract HazeHookTest is Test {
 
     function testCannotCancelBeforeExpiry() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
 
         vm.prank(trader);
         vm.expectRevert(HazeHook.CannotCancelBeforeExpiry.selector);
@@ -191,7 +242,7 @@ contract HazeHookTest is Test {
 
     function testCannotCancelAlreadySettledSwap() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
         vm.warp(block.timestamp + 1 days + 1);
 
         vm.prank(trader);
@@ -205,7 +256,7 @@ contract HazeHookTest is Test {
     function testCannotCommitWithPastOrCurrentDeadline() public {
         vm.prank(trader);
         vm.expectRevert(HazeHook.InvalidDeadline.selector);
-        hook.commitSwap(key, true, -1e18, block.timestamp);
+        hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp);
     }
 
     function testCannotCommitAgainstInitializedPoolWithNoLiquidity() public {
@@ -226,7 +277,7 @@ contract HazeHookTest is Test {
 
         vm.prank(trader);
         vm.expectRevert(abi.encodeWithSelector(HazeHook.BelowRiskThreshold.selector, 0));
-        hook.commitSwap(key, true, -1e18, block.timestamp + 1 days);
+        hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
     }
 
     function testEstimatedImpactIsZeroForZeroAmount() public view {
@@ -263,7 +314,7 @@ contract HazeHookTest is Test {
 
         vm.prank(trader);
         vm.expectRevert(HazeHook.PoolNotInitialized.selector);
-        hook.commitSwap(uninitKey, true, -1e18, block.timestamp + 1 days);
+        hook.commitSwap{value: bond}(uninitKey, true, -1e18, block.timestamp + 1 days);
     }
 
     function testDirectionalCandidatePriceRejectsOutOfRangeIndex() public {
