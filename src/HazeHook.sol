@@ -142,11 +142,17 @@ contract HazeHook is BaseHook {
         if (deadline <= block.timestamp) revert InvalidDeadline();
         if (amountSpecified >= 0) revert ExactInputOnly();
 
-        uint256 impactBps = estimatedImpactBps(key, zeroForOne, amountSpecified);
-        if (impactBps <= RISK_THRESHOLD_BPS) revert BelowRiskThreshold(impactBps);
-
+        // Check pool initialization BEFORE estimating impact: estimatedImpactBps
+        // itself returns 0bps for an uninitialized pool (sqrtPriceX96 == 0), which
+        // is always <= RISK_THRESHOLD_BPS. Checking impact first meant an
+        // uninitialized pool always reverted with the misleading
+        // BelowRiskThreshold(0) instead of PoolNotInitialized, making the latter
+        // dead code.
         (uint160 sqrtPriceAtCommit,,,) = poolManager.getSlot0(key.toId());
         if (sqrtPriceAtCommit == 0) revert PoolNotInitialized();
+
+        uint256 impactBps = estimatedImpactBps(key, zeroForOne, amountSpecified);
+        if (impactBps <= RISK_THRESHOLD_BPS) revert BelowRiskThreshold(impactBps);
 
         swapId = nextSwapId++;
         uint256 requestId = randomnessConsumer.requestRandomness(swapId);
