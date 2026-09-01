@@ -45,11 +45,28 @@ contract HazeHook is BaseHook {
     error ProtectedSwapRequired(uint256 impactBps);
     error PoolNotInitialized();
     error BelowRiskThreshold(uint256 impactBps);
+    error IncorrectBondAmount(uint256 expected, uint256 provided);
+    error NoBondToWithdraw();
+    error BondTransferFailed();
 
     uint256 public constant RISK_THRESHOLD_BPS = 50;
     uint256 public constant PRICE_BAND_BPS = 20;
     uint8 public constant NUM_CANDIDATES = 5;
     uint256 public constant PROTECTED_LANE_FEE_PREMIUM_BPS = 10;
+
+    /// @notice Native-token bond required to commitSwap(), refundable via
+    ///         withdrawBond() once the swap is settled or cancelled.
+    /// @dev Closes a real griefing vector: estimatedImpactBps is computed from
+    ///      `amountSpecified` as a bare number — commitSwap never checked that
+    ///      the caller actually holds or approved that amount. Without a cost
+    ///      attached to the call itself, anyone could pass an arbitrarily large
+    ///      amountSpecified to trivially clear RISK_THRESHOLD_BPS against any
+    ///      real pool and force a paid VRF request for the price of gas alone,
+    ///      repeatable in a loop to drain the VRF subscription's LINK balance.
+    ///      A fixed bond makes every request cost real, locked capital (fully
+    ///      refundable, but only after settling or cancelling), which scales
+    ///      an attacker's cost with the number of requests they force.
+    uint256 public constant COMMIT_BOND = 0.001 ether;
 
     struct PendingSwap {
         address trader;
@@ -66,12 +83,14 @@ contract HazeHook is BaseHook {
     ISwapRandomnessConsumer public immutable randomnessConsumer;
     uint256 public nextSwapId = 1;
     mapping(uint256 => PendingSwap) public pendingSwaps;
+    mapping(address => uint256) public unclaimedBond;
     bool private settling;
 
     event SwapCommitted(address indexed trader, uint256 indexed swapId, uint256 indexed requestId);
     event SwapSettled(uint256 indexed swapId, uint8 candidateIndex, uint160 sqrtPriceLimitX96);
     event SwapCancelled(uint256 indexed swapId, address indexed trader);
     event PremiumRecaptured(uint256 indexed swapId, bool isCurrency0, uint256 amount);
+    event BondWithdrawn(address indexed trader, uint256 amount);
 
     constructor(IPoolManager manager, ISwapRandomnessConsumer consumer)
         BaseHook(manager)
@@ -98,21 +117,26 @@ contract HazeHook is BaseHook {
         });
     }
 
-    /// @dev Blocks high-impact exact-input swaps from going through the normal
-    ///      v4 swap path, forcing them through commitSwap/settleSwap instead.
-    ///      The `settling` flag lets the hook's OWN internal settlement swap
-    ///      (triggered from unlockCallback) pass through without re-triggering
-    ///      this check on itself.
-    ///      KNOWN LIMITATION (documented, not hidden): exact-output swaps
-    ///      (amountSpecified >= 0) are not classified here, since impact cannot
-    ///      be safely estimated from the specified output amount alone in this
-    ///      prototype. A trader could bypass protection by using exact-output.
+    /// @dev Blocks high-impact swaps from going through the normal v4 swap path,
+    ///      forcing them through commitSwap/settleSwap instead. The `settling`
+    ///      flag lets the hook's OWN internal settlement swap (triggered from
+    ///      unlockCallback) pass through without re-triggering this check on
+    ///      itself.
+    ///      FIX: previously only exact-input swaps (amountSpecified < 0) were
+    ///      classified here, so a trader could bypass protection entirely by
+    ///      submitting the same trade as exact-output. estimatedImpactBps
+    ///      already takes the magnitude of amountSpecified regardless of sign,
+    ///      so it works unchanged for both — this now classifies every swap.
+    ///      Since commitSwap is exact-input only (see its own @dev comment),
+    ///      a high-impact exact-output swap has no protected route through
+    ///      this pool at all; it simply reverts, and the trader has to resubmit
+    ///      as exact-input to use the commit/settle flow.
     function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         internal
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        if (!settling && params.amountSpecified < 0) {
+        if (!settling && params.amountSpecified != 0) {
             uint256 impactBps = estimatedImpactBps(key, params.zeroForOne, params.amountSpecified);
             if (impactBps > RISK_THRESHOLD_BPS) {
                 revert ProtectedSwapRequired(impactBps);
@@ -130,15 +154,23 @@ contract HazeHook is BaseHook {
     ///      time. This prototype does not yet enforce or check that allowance
     ///      up front — settleSwap will simply revert at the transfer step if it's
     ///      missing. Flag this clearly as a known gap in your README.
-    /// @dev Gated to exact-input swaps that actually clear RISK_THRESHOLD_BPS so
-    ///      this can't be used to spam paid VRF requests against the consumer's
-    ///      subscription for free (any caller, any size, no cost but gas).
+    /// @dev Gated to exact-input swaps that actually clear RISK_THRESHOLD_BPS,
+    ///      AND requires COMMIT_BOND of native currency as msg.value. The impact
+    ///      gate alone is not a real cost: estimatedImpactBps is computed from
+    ///      amountSpecified as a bare number, with no balance/allowance check,
+    ///      so anyone could pass an arbitrarily large amountSpecified to clear
+    ///      the threshold for free and force a paid VRF request — repeatable in
+    ///      a loop to drain the subscription's LINK. The bond is refundable via
+    ///      withdrawBond() once the swap is settled or cancelled, but must be
+    ///      posted and locked for every individual request, which is what
+    ///      actually scales an attacker's cost with request volume.
     function commitSwap(
         PoolKey calldata key,
         bool zeroForOne,
         int256 amountSpecified,
         uint256 deadline
-    ) external returns (uint256 swapId) {
+    ) external payable returns (uint256 swapId) {
+        if (msg.value != COMMIT_BOND) revert IncorrectBondAmount(COMMIT_BOND, msg.value);
         if (deadline <= block.timestamp) revert InvalidDeadline();
         if (amountSpecified >= 0) revert ExactInputOnly();
 
@@ -253,6 +285,11 @@ contract HazeHook is BaseHook {
         // avoids relying on the consumer returning a consistent answer twice.
         poolManager.unlock(abi.encode(swapId, candidateIndex, sqrtPriceLimitX96));
 
+        // Credit the bond back rather than sending it directly: a push transfer
+        // here would let a trader with a deliberately reverting receive() brick
+        // their own settlement permanently. Pull it via withdrawBond() instead.
+        unclaimedBond[pending.trader] += COMMIT_BOND;
+
         emit SwapSettled(swapId, candidateIndex, sqrtPriceLimitX96);
     }
 
@@ -262,7 +299,21 @@ contract HazeHook is BaseHook {
         if (block.timestamp <= pending.deadline) revert CannotCancelBeforeExpiry();
         if (pending.settled) revert AlreadySettled();
         pending.settled = true;
+        unclaimedBond[pending.trader] += COMMIT_BOND;
         emit SwapCancelled(swapId, msg.sender);
+    }
+
+    /// @notice Pull-payment withdrawal for bonds credited by settleSwap or
+    ///         cancelExpiredSwap. Kept separate from those functions so a
+    ///         trader whose receive()/fallback() reverts can never brick their
+    ///         own settlement or cancellation — only their own later withdrawal.
+    function withdrawBond() external {
+        uint256 amount = unclaimedBond[msg.sender];
+        if (amount == 0) revert NoBondToWithdraw();
+        unclaimedBond[msg.sender] = 0;
+        (bool ok,) = payable(msg.sender).call{value: amount}("");
+        if (!ok) revert BondTransferFailed();
+        emit BondWithdrawn(msg.sender, amount);
     }
 
     /// @dev Called by PoolManager after settleSwap invokes unlock(). Performs the

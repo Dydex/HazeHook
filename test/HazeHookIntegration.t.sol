@@ -39,8 +39,10 @@ contract HazeHookIntegrationTest is BaseTest {
     Currency currency0;
     Currency currency1;
     address trader = address(0xCAFE);
+    uint256 bond;
 
     function setUp() public {
+        vm.deal(trader, 10 ether); // covers COMMIT_BOND across every test
         deployArtifactsAndLabel();
         (currency0, currency1) = deployCurrencyPair();
         randomness = new IntegrationRandomness();
@@ -52,6 +54,8 @@ contract HazeHookIntegrationTest is BaseTest {
             flags
         );
         hook = HazeHook(flags);
+        // Read once here, not inline in a pranked call — see HazeHook.t.sol for why.
+        bond = hook.COMMIT_BOND();
 
         poolKey = PoolKey(currency0, currency1, 3000, 60, hook);
         poolManager.initialize(poolKey, Constants.SQRT_PRICE_1_1);
@@ -73,7 +77,7 @@ contract HazeHookIntegrationTest is BaseTest {
     }
 
     function testCommitAgainstInitializedV4Pool() public {
-        uint256 swapId = hook.commitSwap(
+        uint256 swapId = hook.commitSwap{value: bond}(
             poolKey, true, -1e18, block.timestamp + 1 days
         );
         (address trader,,,,,, uint256 requestId,,) = hook.pendingSwaps(swapId);
@@ -83,7 +87,7 @@ contract HazeHookIntegrationTest is BaseTest {
 
     function testRealSettlementAgainstV4Pool() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(
+        uint256 swapId = hook.commitSwap{value: bond}(
             poolKey, true, -1e18, block.timestamp + 1 days
         );
         randomness.fulfill(swapId);
@@ -95,9 +99,24 @@ contract HazeHookIntegrationTest is BaseTest {
         assertGt(afterBalance, beforeBalance);
     }
 
+    function testBondIsWithdrawableAfterRealSettlement() public {
+        vm.prank(trader);
+        uint256 swapId = hook.commitSwap{value: bond}(poolKey, true, -1e18, block.timestamp + 1 days);
+        randomness.fulfill(swapId);
+
+        vm.prank(trader);
+        hook.settleSwap(swapId);
+        assertEq(hook.unclaimedBond(trader), bond);
+
+        uint256 balanceBefore = trader.balance;
+        vm.prank(trader);
+        hook.withdrawBond();
+        assertEq(trader.balance, balanceBefore + bond);
+    }
+
     function testCannotSettleSameSwapTwice() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(poolKey, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(poolKey, true, -1e18, block.timestamp + 1 days);
         randomness.fulfill(swapId);
 
         vm.prank(trader);
@@ -110,7 +129,7 @@ contract HazeHookIntegrationTest is BaseTest {
 
     function testUnlockCallbackRejectsCallerOtherThanPoolManager() public {
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(poolKey, true, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(poolKey, true, -1e18, block.timestamp + 1 days);
         randomness.fulfill(swapId);
 
         // Bypass settleSwap and try to invoke the settlement callback directly —
@@ -157,7 +176,7 @@ contract HazeHookIntegrationTest is BaseTest {
         // direction so the amount1 < 0 / amount0 > 0 ("take currency0") branch in
         // unlockCallback actually runs at least once.
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(poolKey, false, -1e18, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(poolKey, false, -1e18, block.timestamp + 1 days);
         randomness.fulfill(swapId);
 
         uint256 before0 = IERC20(Currency.unwrap(currency0)).balanceOf(trader);
@@ -199,7 +218,7 @@ contract HazeHookIntegrationTest is BaseTest {
         );
 
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(thinKey, false, -1300, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(thinKey, false, -1300, block.timestamp + 1 days);
         randomness.fulfill(swapId);
 
         // Note: feeGrowthGlobal1 is NOT a usable signal here — the underlying
@@ -226,7 +245,7 @@ contract HazeHookIntegrationTest is BaseTest {
         int256 amountSpecified = -1e18;
 
         vm.prank(trader);
-        uint256 swapId = hook.commitSwap(poolKey, true, amountSpecified, block.timestamp + 1 days);
+        uint256 swapId = hook.commitSwap{value: bond}(poolKey, true, amountSpecified, block.timestamp + 1 days);
         randomness.fulfill(swapId);
 
         PoolId poolId = poolKey.toId();
