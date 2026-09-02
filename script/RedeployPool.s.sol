@@ -32,7 +32,7 @@ contract RedeployPoolScript is BaseScript, LiquidityHelpers {
     // deterministic given HazeHook's bytecode + constructor args + flags, so
     // this matches whatever RedeployHook.s.sol actually deploys as long as
     // HazeHook.sol isn't changed again in between.
-    address constant HOOK = 0x693A5f83f6a88Bd455828Fa1e99039EdFCAf0080;
+    address constant HOOK = 0xdE8563cd71256d980AB37c7DeD90671915d30080;
 
     uint24 constant LP_FEE = 500;
     int24 constant TICK_SPACING = 10;

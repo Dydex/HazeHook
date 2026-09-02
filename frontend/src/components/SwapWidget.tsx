@@ -603,9 +603,9 @@ export function SwapWidget() {
       )}
 
       {!!unclaimedBondAmount && unclaimedBondAmount > BigInt(0) && (
-        <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-lime-400/40 bg-lime-400/10 px-3 py-2 font-mono text-xs text-lime-300">
+        <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 font-mono text-xs text-amber-300">
           <span>
-            {Number(formatEther(unclaimedBondAmount)).toFixed(4)} ETH commit bond ready to reclaim
+            {Number(formatEther(unclaimedBondAmount)).toFixed(4)} ETH bond couldn&apos;t auto-refund — claim it manually
           </span>
           <button
             onClick={doWithdrawBond}
@@ -679,8 +679,8 @@ export function SwapWidget() {
           </div>
           {isProtected && swapId === null && (
             <p className="mt-1 font-mono text-[11px] text-zinc-500">
-              Committing locks a {formatEther(COMMIT_BOND_WEI)} ETH bond, refundable once you settle or cancel —
-              stops spam requests to the randomness oracle.
+              Committing locks a {formatEther(COMMIT_BOND_WEI)} ETH bond, sent straight back to you when you settle
+              or cancel — stops spam requests to the randomness oracle.
             </p>
           )}
 

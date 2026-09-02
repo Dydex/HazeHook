@@ -3,10 +3,14 @@ import { encodeAbiParameters, encodePacked, keccak256, parseAbi } from "viem";
 export const SEPOLIA_CHAIN_ID = 11155111;
 
 // Redeployed hook — carries the commit-bond fix (closes a free VRF-spam
-// griefing vector) and the exact-output classification fix (previously a
-// documented bypass). The prior hook at 0x47eba0b2...048080 is retired; its
-// pool is left untouched but no longer used by this frontend.
-export const HAZE_HOOK_ADDRESS = "0x693a5f83f6a88bd455828fa1e99039edfcaf0080" as const;
+// griefing vector), the exact-output classification fix (previously a
+// documented bypass), auto-refunding the commit bond on settle/cancel
+// instead of requiring a separate claim, and a wider PRICE_BAND_BPS (30,
+// real price-bps limits of 12/24/36/48/60) so trades sized right at
+// RISK_THRESHOLD_BPS can fully fill on a lucky draw instead of never.
+// Two prior hooks (0x47eba0b2...048080, 0x693a5f83...cc080) are retired;
+// their pools are left untouched but no longer used by this frontend.
+export const HAZE_HOOK_ADDRESS = "0xde8563cd71256d980ab37c7ded90671915d30080" as const;
 export const TEST_TOKEN_ADDRESS = "0xde8a1613ee95a0ee72ff5b72af2aadfe6c783f3d" as const;
 export const WETH_ADDRESS = "0xfff9976782d46cc05630d1f6ebab18b2324d6b14" as const;
 // Unchanged — this is the same VRFConsumer as before, just repointed at the
@@ -55,7 +59,7 @@ export const HAZE_HOOK_ABI = parseAbi([
 
 // The block the currently-live HazeHook was deployed/repointed at — used to
 // scope PremiumRecaptured event scans instead of querying from genesis.
-export const HAZE_HOOK_DEPLOY_BLOCK = BigInt(11617932);
+export const HAZE_HOOK_DEPLOY_BLOCK = BigInt(11619101);
 
 const ERC20_FUNCTIONS = [
   `function balanceOf(address) view returns (uint256)`,
