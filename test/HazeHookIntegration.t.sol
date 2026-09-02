@@ -99,19 +99,19 @@ contract HazeHookIntegrationTest is BaseTest {
         assertGt(afterBalance, beforeBalance);
     }
 
-    function testBondIsWithdrawableAfterRealSettlement() public {
+    function testBondIsAutoRefundedAfterRealSettlement() public {
         vm.prank(trader);
         uint256 swapId = hook.commitSwap{value: bond}(poolKey, true, -1e18, block.timestamp + 1 days);
         randomness.fulfill(swapId);
 
-        vm.prank(trader);
-        hook.settleSwap(swapId);
-        assertEq(hook.unclaimedBond(trader), bond);
-
         uint256 balanceBefore = trader.balance;
         vm.prank(trader);
-        hook.withdrawBond();
+        hook.settleSwap(swapId);
+
+        // Bond is pushed straight back in the same transaction — no separate
+        // claim needed for a normal EOA trader.
         assertEq(trader.balance, balanceBefore + bond);
+        assertEq(hook.unclaimedBond(trader), 0);
     }
 
     function testCannotSettleSameSwapTwice() public {

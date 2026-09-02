@@ -50,12 +50,24 @@ contract HazeHook is BaseHook {
     error BondTransferFailed();
 
     uint256 public constant RISK_THRESHOLD_BPS = 50;
-    uint256 public constant PRICE_BAND_BPS = 20;
+    /// @dev This is applied to sqrtPriceX96 directly in directionalCandidatePrice,
+    ///      not to the underlying price — since price = sqrtPrice^2, a given
+    ///      sqrtPrice-bps move is ~2x that many REAL price-bps (matching the
+    ///      d(price)/price ~= 2*d(sqrtPrice)/sqrtPrice approximation used by
+    ///      estimatedImpactBps). So today's candidates (this value split across
+    ///      NUM_CANDIDATES) work out to REAL price-bps limits of 12/24/36/48/60,
+    ///      not the 15/30/45/60/75 a naive reading of "30 split 5 ways" implies.
+    ///      Chosen so the widest candidate (60 real bps) clears
+    ///      RISK_THRESHOLD_BPS (50) — meaning a trade sized right at the
+    ///      threshold can fully fill on a lucky draw, where it never could
+    ///      before this was 20 (widest real candidate topped out at 40, always
+    ///      below the 50bps minimum needed to even qualify for protection).
+    uint256 public constant PRICE_BAND_BPS = 30;
     uint8 public constant NUM_CANDIDATES = 5;
     uint256 public constant PROTECTED_LANE_FEE_PREMIUM_BPS = 10;
 
-    /// @notice Native-token bond required to commitSwap(), refundable via
-    ///         withdrawBond() once the swap is settled or cancelled.
+    /// @notice Native-token bond required to commitSwap(), sent straight back
+    ///         (see _refundBond) once the swap is settled or cancelled.
     /// @dev Closes a real griefing vector: estimatedImpactBps is computed from
     ///      `amountSpecified` as a bare number — commitSwap never checked that
     ///      the caller actually holds or approved that amount. Without a cost
@@ -160,10 +172,11 @@ contract HazeHook is BaseHook {
     ///      amountSpecified as a bare number, with no balance/allowance check,
     ///      so anyone could pass an arbitrarily large amountSpecified to clear
     ///      the threshold for free and force a paid VRF request — repeatable in
-    ///      a loop to drain the subscription's LINK. The bond is refundable via
-    ///      withdrawBond() once the swap is settled or cancelled, but must be
-    ///      posted and locked for every individual request, which is what
-    ///      actually scales an attacker's cost with request volume.
+    ///      a loop to drain the subscription's LINK. The bond is sent back
+    ///      automatically once the swap is settled or cancelled (see
+    ///      _refundBond), but must be posted and locked for every individual
+    ///      request, which is what actually scales an attacker's cost with
+    ///      request volume.
     function commitSwap(
         PoolKey calldata key,
         bool zeroForOne,
@@ -285,10 +298,7 @@ contract HazeHook is BaseHook {
         // avoids relying on the consumer returning a consistent answer twice.
         poolManager.unlock(abi.encode(swapId, candidateIndex, sqrtPriceLimitX96));
 
-        // Credit the bond back rather than sending it directly: a push transfer
-        // here would let a trader with a deliberately reverting receive() brick
-        // their own settlement permanently. Pull it via withdrawBond() instead.
-        unclaimedBond[pending.trader] += COMMIT_BOND;
+        _refundBond(pending.trader);
 
         emit SwapSettled(swapId, candidateIndex, sqrtPriceLimitX96);
     }
@@ -299,14 +309,32 @@ contract HazeHook is BaseHook {
         if (block.timestamp <= pending.deadline) revert CannotCancelBeforeExpiry();
         if (pending.settled) revert AlreadySettled();
         pending.settled = true;
-        unclaimedBond[pending.trader] += COMMIT_BOND;
+        _refundBond(pending.trader);
         emit SwapCancelled(swapId, msg.sender);
     }
 
-    /// @notice Pull-payment withdrawal for bonds credited by settleSwap or
-    ///         cancelExpiredSwap. Kept separate from those functions so a
-    ///         trader whose receive()/fallback() reverts can never brick their
-    ///         own settlement or cancellation — only their own later withdrawal.
+    /// @notice Sends the COMMIT_BOND straight back to the trader — no separate
+    ///         claim transaction needed in the common case.
+    /// @dev Bounded-gas push with a pull-payment fallback: `trader` here is
+    ///      always msg.sender of settleSwap/cancelExpiredSwap (enforced by
+    ///      NotTrader), so this is always a self-refund, not a transfer to an
+    ///      arbitrary third party. If the push fails — a contract wallet with
+    ///      a reverting or expensive receive()/fallback() — the bond is
+    ///      credited to unclaimedBond instead of reverting, so a broken
+    ///      refund can never brick the trader's own settlement or
+    ///      cancellation; they recover it later via withdrawBond().
+    function _refundBond(address trader) internal {
+        (bool ok,) = payable(trader).call{gas: 30_000, value: COMMIT_BOND}("");
+        if (ok) {
+            emit BondWithdrawn(trader, COMMIT_BOND);
+        } else {
+            unclaimedBond[trader] += COMMIT_BOND;
+        }
+    }
+
+    /// @notice Pull-payment fallback for the rare case _refundBond's push
+    ///         failed (e.g. a contract wallet whose receive() reverted or ran
+    ///         out of the bounded gas stipend).
     function withdrawBond() external {
         uint256 amount = unclaimedBond[msg.sender];
         if (amount == 0) revert NoBondToWithdraw();

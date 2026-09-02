@@ -32,6 +32,15 @@ contract TestRandomnessConsumer is ISwapRandomnessConsumer {
     }
 }
 
+/// @dev A contract "trader" whose receive() always reverts, used to exercise
+///      _refundBond's pull-payment fallback path (unclaimedBond) — a plain
+///      EOA can't hit that branch since sending it ETH never fails.
+contract RevertingReceiver {
+    receive() external payable {
+        revert("nope");
+    }
+}
+
 contract HazeHookTest is Test {
     using PoolIdLibrary for PoolKey;
 
@@ -116,32 +125,51 @@ contract HazeHookTest is Test {
         hook.commitSwap{value: bond + 1}(key, true, -1e18, block.timestamp + 1 days);
     }
 
-    function testBondIsLockedUntilCancelThenWithdrawable() public {
+    function testBondIsAutoRefundedOnCancel() public {
         vm.prank(trader);
         uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
 
-        // Bond isn't claimable while the swap is still pending.
+        // Bond isn't refunded while the swap is still pending, and there's
+        // nothing to pull yet either.
         assertEq(hook.unclaimedBond(trader), 0);
         vm.prank(trader);
         vm.expectRevert(HazeHook.NoBondToWithdraw.selector);
         hook.withdrawBond();
 
         vm.warp(block.timestamp + 1 days + 1);
+        uint256 balanceBefore = trader.balance;
         vm.prank(trader);
         hook.cancelExpiredSwap(swapId);
 
-        assertEq(hook.unclaimedBond(trader), bond);
-
-        uint256 balanceBefore = trader.balance;
-        vm.prank(trader);
-        hook.withdrawBond();
+        // Pushed straight back in the same call — nothing left to claim.
         assertEq(trader.balance, balanceBefore + bond);
         assertEq(hook.unclaimedBond(trader), 0);
+    }
 
-        // Can't withdraw the same bond twice.
-        vm.prank(trader);
-        vm.expectRevert(HazeHook.NoBondToWithdraw.selector);
+    function testBondFallsBackToUnclaimedWhenPushFails() public {
+        RevertingReceiver badTrader = new RevertingReceiver();
+        vm.deal(address(badTrader), 10 ether);
+
+        vm.prank(address(badTrader));
+        uint256 swapId = hook.commitSwap{value: bond}(key, true, -1e18, block.timestamp + 1 days);
+
+        vm.warp(block.timestamp + 1 days + 1);
+        uint256 balanceBefore = address(badTrader).balance;
+        vm.prank(address(badTrader));
+        hook.cancelExpiredSwap(swapId); // doesn't revert even though the push fails
+
+        // Push failed (reverting receive()), so the balance didn't move yet —
+        // the bond is parked in unclaimedBond instead, recoverable separately.
+        assertEq(address(badTrader).balance, balanceBefore);
+        assertEq(hook.unclaimedBond(address(badTrader)), bond);
+
+        // withdrawBond() itself would also fail for the same reason (still a
+        // push to the same reverting receive()) — confirms the bond isn't
+        // silently lost, just genuinely stuck behind this wallet's own code.
+        vm.prank(address(badTrader));
+        vm.expectRevert(HazeHook.BondTransferFailed.selector);
         hook.withdrawBond();
+        assertEq(hook.unclaimedBond(address(badTrader)), bond);
     }
 
     function testCannotCommitExactOutputSwap() public {
@@ -342,14 +370,22 @@ contract HazeHookTest is Test {
 
     function testCandidatePricesStayWithinBand() public view {
         uint160 base = 1e18;
+        // Widest possible distance is the last candidate: PRICE_BAND_BPS split
+        // NUM_CANDIDATES ways, all NUM_CANDIDATES of them. Derived from the
+        // constants rather than hardcoded so this doesn't silently stop
+        // testing the real invariant if PRICE_BAND_BPS changes again.
+        uint256 maxDistance = hook.NUM_CANDIDATES() * hook.PRICE_BAND_BPS() / hook.NUM_CANDIDATES();
+        uint160 minDown = uint160(uint256(base) * (10_000 - maxDistance) / 10_000);
+        uint160 maxUp = uint160(uint256(base) * (10_000 + maxDistance) / 10_000);
+
         for (uint8 i = 0; i < hook.NUM_CANDIDATES(); i++) {
             uint160 downPrice = hook.directionalCandidatePrice(base, i, true);
             assertLe(downPrice, base);
-            assertGe(downPrice, 998e15);
+            assertGe(downPrice, minDown);
 
             uint160 upPrice = hook.directionalCandidatePrice(base, i, false);
             assertGe(upPrice, base);
-            assertLe(upPrice, 1_002e15);
+            assertLe(upPrice, maxUp);
         }
     }
 }
