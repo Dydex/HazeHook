@@ -1,0 +1,58 @@
+<svg width="1135" height="396" viewBox="0 0 1135 396" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HazeHook — a Uniswap v4 pool, defended by randomized settlement">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1135" y2="396" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0a0a0f"/>
+      <stop offset="1" stop-color="#0d0a14"/>
+    </linearGradient>
+    <linearGradient id="protected" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ec4899"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="fast" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#0ea5b7"/>
+    </linearGradient>
+    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0.46" stop-color="#ec4899" stop-opacity="0"/>
+      <stop offset="0.54" stop-color="#22d3ee" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#8b5cf6" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1135" height="396" rx="18" fill="url(#bg)"/>
+  <rect width="1135" height="396" rx="18" fill="url(#glow)"/>
+  <rect x="0.5" y="0.5" width="1134" height="395" rx="17.5" stroke="#ffffff" stroke-opacity="0.08"/>
+
+  <!-- left column: wordmark -->
+  <text x="64" y="108" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" letter-spacing="3" fill="#a78bfa" font-weight="700">UNISWAP V4 HOOK · CHAINLINK VRF v2.5 · MEV PROTECTION</text>
+
+  <text x="60" y="196" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="88" font-weight="800" fill="#f4f4f5">HazeHook</text>
+
+  <text x="64" y="234" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="22" fill="#a1a1aa">Sandwich resistance via a randomized settlement bound.</text>
+
+  <circle cx="72" cy="270" r="5" fill="#22d3ee"/>
+  <text x="86" y="275" font-family="ui-monospace, monospace" font-size="14" fill="#d4d4d8">Fast lane · instant, low-impact swaps</text>
+
+  <circle cx="72" cy="298" r="5" fill="#ec4899"/>
+  <text x="86" y="303" font-family="ui-monospace, monospace" font-size="14" fill="#d4d4d8">Protected lane · commit, VRF draw, bounded settle</text>
+
+  <line x1="64" y1="330" x2="620" y2="330" stroke="#ffffff" stroke-opacity="0.08"/>
+  <text x="64" y="360" font-family="ui-monospace, monospace" font-size="13" fill="#71717a">RISK_THRESHOLD_BPS 50 · PRICE_BAND_BPS 30 · 5 candidates · 0.1% LP recapture</text>
+
+  <!-- right column: stacked lane card, mirrors the app's own two-tone theme -->
+  <g transform="translate(825,64)">
+    <rect x="0" y="0" width="246" height="268" rx="20" fill="url(#protected)"/>
+    <rect x="0" y="134" width="246" height="134" rx="20" fill="url(#fast)"/>
+    <rect x="0" y="120" width="246" height="28" fill="url(#fade)"/>
+    <rect x="0.5" y="0.5" width="245" height="267" rx="19.5" stroke="#ffffff" stroke-opacity="0.15"/>
+
+    <text x="24" y="46" font-family="ui-monospace, monospace" font-size="15" font-weight="700" letter-spacing="1.5" fill="#fdf4ff">PROTECTED</text>
+    <text x="24" y="68" font-family="ui-monospace, monospace" font-size="12" fill="#fce7f3" fill-opacity="0.85">commit → VRF → bounded settle</text>
+
+    <text x="24" y="222" font-family="ui-monospace, monospace" font-size="15" font-weight="700" letter-spacing="1.5" fill="#ecfeff">FAST LANE</text>
+    <text x="24" y="244" font-family="ui-monospace, monospace" font-size="12" fill="#cffafe" fill-opacity="0.85">executes instantly, no bond</text>
+  </g>
+</svg>

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="HazeHook — a Uniswap v4 pool, defended by randomized settlement" width="100%">
+</p>
+
 **A Uniswap v4 hook that makes sandwich attacks harder to size precisely — not by hiding trades, by making their exact execution price unknown until settlement.**
 
 > A sandwich bot needs to know, before it acts, how much slippage room your trade will actually use. Haze doesn't let it find out until after your trade is already queued.
