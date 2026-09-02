@@ -2,10 +2,19 @@ import { encodeAbiParameters, encodePacked, keccak256, parseAbi } from "viem";
 
 export const SEPOLIA_CHAIN_ID = 11155111;
 
-export const HAZE_HOOK_ADDRESS = "0x47eba0b231d3cec1d74597ddab60df6a41048080" as const;
+// Redeployed hook — carries the commit-bond fix (closes a free VRF-spam
+// griefing vector) and the exact-output classification fix (previously a
+// documented bypass). The prior hook at 0x47eba0b2...048080 is retired; its
+// pool is left untouched but no longer used by this frontend.
+export const HAZE_HOOK_ADDRESS = "0x693a5f83f6a88bd455828fa1e99039edfcaf0080" as const;
 export const TEST_TOKEN_ADDRESS = "0xde8a1613ee95a0ee72ff5b72af2aadfe6c783f3d" as const;
 export const WETH_ADDRESS = "0xfff9976782d46cc05630d1f6ebab18b2324d6b14" as const;
+// Unchanged — this is the same VRFConsumer as before, just repointed at the
+// new hook via setHook() rather than redeployed.
 export const VRF_CONSUMER_ADDRESS = "0x978ac30c2adf302e86b3815a6d165f2893af4ce5" as const;
+// commitSwap() now requires this exact native-token bond per commit,
+// refundable via withdrawBond() once the swap settles or is cancelled.
+export const COMMIT_BOND_WEI = BigInt("1000000000000000"); // 0.001 ETH
 
 // Canonical v4 PoolManager on Sepolia (from hookmate's AddressConstants).
 export const POOL_MANAGER_ADDRESS = "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543" as const;
@@ -28,21 +37,25 @@ const POOL_KEY_TUPLE = "(address currency0, address currency1, uint24 fee, int24
 export const HAZE_HOOK_ABI = parseAbi([
   `function RISK_THRESHOLD_BPS() view returns (uint256)`,
   `function PRICE_BAND_BPS() view returns (uint256)`,
+  `function COMMIT_BOND() view returns (uint256)`,
+  `function unclaimedBond(address) view returns (uint256)`,
   `function estimatedImpactBps(${POOL_KEY_TUPLE} key, bool zeroForOne, int256 amountSpecified) view returns (uint256)`,
   `function isProtected(${POOL_KEY_TUPLE} key, bool zeroForOne, int256 amountSpecified) view returns (bool)`,
   `function recommendedSlippageBps(${POOL_KEY_TUPLE} key, bool zeroForOne, int256 amountSpecified) view returns (uint256)`,
-  `function commitSwap(${POOL_KEY_TUPLE} key, bool zeroForOne, int256 amountSpecified, uint256 deadline) returns (uint256 swapId)`,
+  `function commitSwap(${POOL_KEY_TUPLE} key, bool zeroForOne, int256 amountSpecified, uint256 deadline) payable returns (uint256 swapId)`,
   `function settleSwap(uint256 swapId) returns (uint160 sqrtPriceLimitX96)`,
   `function cancelExpiredSwap(uint256 swapId)`,
+  `function withdrawBond()`,
   `event SwapCommitted(address indexed trader, uint256 indexed swapId, uint256 indexed requestId)`,
   `event SwapSettled(uint256 indexed swapId, uint8 candidateIndex, uint160 sqrtPriceLimitX96)`,
   `event SwapCancelled(uint256 indexed swapId, address indexed trader)`,
   `event PremiumRecaptured(uint256 indexed swapId, bool isCurrency0, uint256 amount)`,
+  `event BondWithdrawn(address indexed trader, uint256 amount)`,
 ]);
 
-// The block HazeHook was deployed at — used to scope PremiumRecaptured event
-// scans instead of querying from genesis.
-export const HAZE_HOOK_DEPLOY_BLOCK = BigInt(11586541);
+// The block the currently-live HazeHook was deployed/repointed at — used to
+// scope PremiumRecaptured event scans instead of querying from genesis.
+export const HAZE_HOOK_DEPLOY_BLOCK = BigInt(11617932);
 
 const ERC20_FUNCTIONS = [
   `function balanceOf(address) view returns (uint256)`,

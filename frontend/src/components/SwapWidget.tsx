@@ -11,6 +11,7 @@ import {
   useWriteContract,
 } from "wagmi";
 import {
+  COMMIT_BOND_WEI,
   ERC20_ABI,
   EXTSLOAD_ABI,
   HAZE_HOOK_ABI,
@@ -280,6 +281,7 @@ export function SwapWidget() {
       abi: HAZE_HOOK_ABI,
       functionName: "commitSwap",
       args: [POOL_KEY, zeroForOne, amountSpecified, deadline],
+      value: COMMIT_BOND_WEI,
     });
   }
 
@@ -341,8 +343,37 @@ export function SwapWidget() {
     setCommitDeadline(null);
   }
 
+  // --- Bond reclaim: commitSwap locks COMMIT_BOND_WEI, credited back here
+  // (as a pull-payment, not auto-sent) once a swap settles or is cancelled ---
+  const { data: unclaimedBondAmount, refetch: refetchUnclaimedBond } = useReadContract({
+    address: HAZE_HOOK_ADDRESS,
+    abi: HAZE_HOOK_ABI,
+    functionName: "unclaimedBond",
+    args: address ? [address] : undefined,
+    query: { enabled: !!address, refetchInterval: 10_000 },
+  });
+  const withdrawBond = useWriteContract();
+  const withdrawBondReceipt = useWaitForTransactionReceipt({ hash: withdrawBond.data });
+  useEffect(() => {
+    if (withdrawBondReceipt.isSuccess) refetchUnclaimedBond();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [withdrawBondReceipt.isSuccess]);
+  useEffect(() => {
+    // Bonds are credited by settleSwap/cancelExpiredSwap — pick those up too.
+    if (settleReceipt.isSuccess || cancelReceipt.isSuccess) refetchUnclaimedBond();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settleReceipt.isSuccess, cancelReceipt.isSuccess]);
+
+  function doWithdrawBond() {
+    withdrawBond.writeContract({
+      address: HAZE_HOOK_ADDRESS,
+      abi: HAZE_HOOK_ABI,
+      functionName: "withdrawBond",
+    });
+  }
+
   // --- Gas estimate for whichever transaction is next in the flow ---
-  let nextAction: { to: `0x${string}`; data: `0x${string}` } | undefined;
+  let nextAction: { to: `0x${string}`; data: `0x${string}`; value?: bigint } | undefined;
   if (isProtected === false && needsRouterApproval && amountSpecified !== undefined) {
     nextAction = {
       to: inputToken,
@@ -387,6 +418,7 @@ export function SwapWidget() {
         functionName: "commitSwap",
         args: [POOL_KEY, zeroForOne, amountSpecified, BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS)],
       }),
+      value: COMMIT_BOND_WEI,
     };
   } else if (swapId !== null && !settled && isExpired && !fulfilled) {
     nextAction = {
@@ -404,6 +436,7 @@ export function SwapWidget() {
     account: address,
     to: nextAction?.to,
     data: nextAction?.data,
+    value: nextAction?.value,
     query: { enabled: !!address && !!nextAction },
   });
   const { data: gasPrice } = useGasPrice();
@@ -569,6 +602,21 @@ export function SwapWidget() {
         <p className="mt-3 font-mono text-xs text-red-400">Couldn&apos;t read the pool — try a different amount.</p>
       )}
 
+      {!!unclaimedBondAmount && unclaimedBondAmount > BigInt(0) && (
+        <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-lime-400/40 bg-lime-400/10 px-3 py-2 font-mono text-xs text-lime-300">
+          <span>
+            {Number(formatEther(unclaimedBondAmount)).toFixed(4)} ETH commit bond ready to reclaim
+          </span>
+          <button
+            onClick={doWithdrawBond}
+            disabled={withdrawBond.isPending || withdrawBondReceipt.isLoading}
+            className="shrink-0 rounded-md border border-lime-400/40 px-2 py-1 font-bold uppercase tracking-widest transition-colors hover:bg-lime-400/20 disabled:opacity-50"
+          >
+            {withdrawBond.isPending || withdrawBondReceipt.isLoading ? "Claiming…" : "Claim"}
+          </button>
+        </div>
+      )}
+
       {/* Details */}
       {!needsRecheck && impactBps !== undefined && isProtected !== undefined && recommendedSlippageBps !== undefined && (
         <div className="mt-4 flex flex-col gap-2 rounded-xl border border-white/[.08] bg-black/40 p-4 font-mono text-xs">
@@ -629,6 +677,12 @@ export function SwapWidget() {
             <span className="h-1.5 w-1.5 rounded-full bg-current" />
             {isProtected ? "Protected lane — commit/settle" : "Fast lane — executes instantly"}
           </div>
+          {isProtected && swapId === null && (
+            <p className="mt-1 font-mono text-[11px] text-zinc-500">
+              Committing locks a {formatEther(COMMIT_BOND_WEI)} ETH bond, refundable once you settle or cancel —
+              stops spam requests to the randomness oracle.
+            </p>
+          )}
 
           {isProtected === false && (
             <div className="mt-1 flex flex-col gap-2">
