@@ -144,11 +144,13 @@ export function SwapWidget() {
     ],
   });
   const priceBandBps = bandConstants?.[0]?.result as bigint | undefined;
-  const numCandidates = bandConstants?.[1]?.result as bigint | undefined;
+  // NUM_CANDIDATES is uint8 — viem decodes small integer ABI types (unlike
+  // uint256) as a plain JS number, not bigint.
+  const numCandidates = bandConstants?.[1]?.result as number | undefined;
 
   function realBpsForCandidate(candidateIndex: number): number | null {
     if (priceBandBps === undefined || numCandidates === undefined) return null;
-    return Number((BigInt(candidateIndex + 1) * priceBandBps * BigInt(2)) / numCandidates);
+    return Number((BigInt(candidateIndex + 1) * priceBandBps * BigInt(2)) / BigInt(numCandidates));
   }
 
   // --- Expected output — only resolvable for fast-lane amounts. The Quoter
