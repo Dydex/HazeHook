@@ -52,6 +52,22 @@ A `PROTECTED_LANE_FEE_PREMIUM_BPS` (10 bps) premium is charged on the *actually 
 
 ---
 
+## Partner integrations
+
+**Chainlink VRF v2.5** is the only external partner integration in this project — it's what the entire "randomized settlement" mechanism is built on. Exact locations:
+
+| What | Where |
+|---|---|
+| The adapter contract itself | `src/VRFConsumer.sol` — extends `VRFConsumerBaseV2Plus` ([line 4](src/VRFConsumer.sol#L4), [line 10](src/VRFConsumer.sol#L10)) |
+| Requesting randomness from the coordinator | `src/VRFConsumer.sol` — `requestRandomWords` call ([line 60](src/VRFConsumer.sol#L60)) |
+| Receiving the result | `src/VRFConsumer.sol` — `fulfillRandomWords` callback ([line 83](src/VRFConsumer.sol#L83)), called by Chainlink's coordinator, not by this project |
+| The hook's side of the integration | `src/HazeHook.sol` — the `ISwapRandomnessConsumer` interface ([line 15](src/HazeHook.sol#L15)), the hook's reference to it ([line 95](src/HazeHook.sol#L95)), the request call inside `commitSwap` ([line 203](src/HazeHook.sol#L203)), the result read inside `settleSwap` ([line 286](src/HazeHook.sol#L286)) |
+| Wiring to the real coordinator/subscription/key hash | `script/DeployHook.s.sol`, `script/RedeployHook.s.sol` |
+
+Verifiable independently of this repo: the live subscription's real request/fulfillment history is visible on [Chainlink's own VRF dashboard](https://vrf.chain.link/sepolia/46997927598943781172806036110123563029699671687926566697681699947473240716140), and every fulfillment transaction on [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x978ac30c2adF302E86b3815A6d165F2893aF4CE5#events) is sent by Chainlink's coordinator contract, not by this project's own wallets — proof the randomness is genuinely external, not self-rolled.
+
+---
+
 ## Architecture
 
 ```mermaid
