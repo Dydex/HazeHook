@@ -137,7 +137,6 @@ All scripts live in `script/`, use `HookMiner` to mine a CREATE2 address matchin
 |---|---|
 | `RedeployHook.s.sol` | Deploys a new `HazeHook`, reusing an already-funded `VRFConsumer` (repoints it via `setHook` — avoids re-registering a new consumer with the VRF subscription) |
 | `RedeployPool.s.sol` | Initializes the HTT/WETH pool at a deliberately lopsided 1:10,000 starting price and seeds liquidity, pointed at whatever hook `RedeployHook.s.sol` most recently deployed |
-| `WithdrawStrandedPools.s.sol` | Burns LP position NFTs left behind by a hook redeploy and sweeps the underlying tokens back to the deployer for reuse |
 
 The very first deployment used two now-deleted scripts, `DeployHook.s.sol` + `DeployLopsidedPool.s.sol` (deploying a fresh `VRFConsumer` + hook pair, since there was no existing one to reuse yet — see `broadcast/` for that history); every redeploy since reuses the `Redeploy*` scripts above instead.
 
@@ -189,9 +188,8 @@ src/
   HazeHook.sol           # the hook: risk classification, commit/settle, bond escrow, LP recapture
   VRFConsumer.sol        # Chainlink VRF v2.5 adapter
 script/
-  RedeployHook.s.sol           # hook (+ consumer) deployment
-  RedeployPool.s.sol           # pool init + liquidity seeding
-  WithdrawStrandedPools.s.sol  # reclaim liquidity from a retired pool
+  RedeployHook.s.sol  # hook (+ consumer) deployment
+  RedeployPool.s.sol  # pool init + liquidity seeding
 test/
   HazeHook.t.sol             # unit tests against a mocked PoolManager
   HazeHookIntegration.t.sol  # integration tests against a real v4 PoolManager
