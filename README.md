@@ -107,10 +107,6 @@ sequenceDiagram
 | Pool | HTT/WETH, fee 500 (0.05%), tick spacing 10, 1 WETH ≈ 10,000 HTT starting price |
 | Test token (HTT) | [`0xDE8A1613Ee95a0Ee72fF5B72Af2aAdFe6C783F3D`](https://sepolia.etherscan.io/address/0xDE8A1613Ee95a0Ee72fF5B72Af2aAdFe6C783F3D) |
 | Sepolia WETH | [`0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`](https://sepolia.etherscan.io/address/0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14) |
-| PoolManager | [`0xE03A1074c86CFeDd5C142C4F04F1a1536e203543`](https://sepolia.etherscan.io/address/0xE03A1074c86CFeDd5C142C4F04F1a1536e203543) |
-| PositionManager | [`0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4`](https://sepolia.etherscan.io/address/0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4) |
-| V4 Quoter | [`0x61B3f2011A92d183C7dbaDBdA940a7555Ccf9227`](https://sepolia.etherscan.io/address/0x61B3f2011A92d183C7dbaDBdA940a7555Ccf9227) |
-| V4 Router | [`0xf13D190e9117920c703d79B5F33732e10049b115`](https://sepolia.etherscan.io/address/0xf13D190e9117920c703d79B5F33732e10049b115) |
 | Chainlink VRF Coordinator | [`0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B`](https://sepolia.etherscan.io/address/0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B) |
 
 ---
@@ -129,18 +125,6 @@ forge coverage --report summary
 
 Foundry's newer lint pass can't resolve a bare `test/utils/Deployers.sol` import inside v4-template's own `BaseScript.sol` (the real compiler resolves it fine relative to v4-template's package root) — `[lint] lint_on_build = false` in `foundry.toml` works around it, matching v4-template's own config.
 
-### Deploy runbook
-
-All scripts live in `script/`, use `HookMiner` to mine a CREATE2 address matching the hook's permission flags (`beforeSwap` only), and broadcast via a named Foundry keystore account rather than a raw private key.
-
-
-```bash
-forge script script/DeployHook.s.sol \
-  --rpc-url <sepolia_rpc> --account <keystore_name> --broadcast
-
-forge script script/DeployPool.s.sol \
-  --rpc-url <sepolia_rpc> --account <keystore_name> --broadcast
-```
 
 ### Frontend
 
@@ -154,25 +138,13 @@ Next.js (Pages Router) + RainbowKit + wagmi/viem. Reads pool price/liquidity via
 
 ---
 
-## Security & trust assumptions
-
-Hackathon-scope code — **not audited, testnet only, do not deploy with real funds without a proper review.**
-
-- **This does not fully solve sandwich attacks — it narrows the window.** `commitSwap` reveals nothing executable yet. But the base price at commit time is public, and the candidate-price formula is public code, so an attacker can compute all 5 possible boundaries immediately — they just don't know which wins, so they're reduced to an expected-value play across a known 5-way distribution rather than a certain one. More importantly: once `settleSwap` is broadcast, the *exact* boundary is sitting in public calldata before it's mined — the actual value-moving swap is, at that moment, just as sandwichable as any ordinary bounded swap. **The real fix for that specific gap is submitting `settleSwap` through a private relay** (e.g. Flashbots Protect) in production; this isn't demonstrable on Sepolia since there's no real economic incentive for an adversary to attack testnet transactions in the first place.
-- **Reentrancy.** `settleSwap` sets `pending.settled = true` *before* the external `poolManager.unlock()` call (checks-effects-interactions) — an earlier version set it after, leaving a window where a malicious token's transfer hooks could re-enter and double-settle. `unlockCallback` is gated `onlyPoolManager`.
-- **VRF request spam.** Closed via the commit bond (see [above](#2-commit--bonded-not-free-commitswap)) — commitSwap previously had no economic cost, only a risk-threshold check that any caller could clear for free with a fabricated `amountSpecified`.
-- **Admin key.** `VRFConsumer.setHook`/`setCallbackConfig` sit behind a single EOA owner (`Ownable`, from `VRFConsumerBaseV2Plus`) — fine for a testnet demo, a real production deployment needs a timelock or multisig here.
-- **Token custody gap, documented not hidden.** `commitSwap` doesn't check the trader's balance/allowance up front — `settleSwap` simply reverts at the transfer step if it's missing. A trader needs to have approved the hook for the input token before committing.
-- **Impact estimation is deliberately conservative.** `estimatedImpactBps` ignores tick-crossing beyond the current tick's liquidity, which under-estimates real impact for large trades — meaning the classifier's error, when it errs, routes a trade to the protected lane a full simulation would've called safe, not the reverse.
 
 ## Limitations & future work
 
 - **Partial fills are expected, not a bug — and they're a real UX cost.** Because `sqrtPriceLimitX96` bounds the trade rather than targeting a price, and the price band is deliberately narrower than the risk threshold that triggers protection, a large protected-lane trade routinely needs 2-3 commit/settle rounds to fill meaningfully. The honest fix is true price-targeting (derive `amountSpecified` from the chosen candidate price via `SqrtPriceMath`, executing fully at that price instead of up to a boundary) — a documented next step, not yet built, because it doesn't solve "fill my whole large request" either (the candidate band is still narrow relative to a genuinely large trade) — it trades discovering the fill amount by hitting a wall for computing it up front.
-- **`settleSwap` mempool visibility** — see [Security](#security--trust-assumptions) above; needs a private relay in production.
+- **`settleSwap` mempool visibility** — once broadcast, the exact price boundary is public before it's mined; needs a private relay (e.g. Flashbots Protect) in production, not demonstrable on Sepolia since there's no real adversary there.
 - **Single admin key on `VRFConsumer`** — needs a multisig/timelock for anything beyond a demo.
 - **Threshold/band tuning is a live parameter, not a solved one.** `RISK_THRESHOLD_BPS`/`PRICE_BAND_BPS` trade off fill completeness against worst-case settle-time price concession; current values (50/30) were chosen so a threshold-sized trade can fully fill on a lucky draw without making the randomization a formality.
-- **Compared to batch-auction systems** (CoW Protocol) or time-spread execution (TWAMM), this trades a stronger protection guarantee for a simpler, fully on-chain, single-contract mechanism — worth stating plainly rather than implying equivalence.
-
 ---
 
 ## Repo layout
