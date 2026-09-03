@@ -10,7 +10,6 @@
 
 Haze is a single hook (`src/HazeHook.sol`) plus a Chainlink VRF v2.5 adapter (`src/VRFConsumer.sol`). Every high-impact swap is forced through commit/settle; the swap itself is bounded by a `sqrtPriceLimitX96` drawn from 5 candidates after commit, so how much of the trade actually fills isn't knowable in advance. A 0.1% premium on protected fills is routed straight to LPs via `PoolManager.donate()` — the same accounting real swap fees use, no separate claims contract.
 
-**The honest proof point, replayed from a real Sepolia transaction (not a simulation):** a trader committed to sell 200 HTT. The VRF draw picked a tight boundary — only 16 real basis points of price room. The trade filled **36.13 HTT (18%)** before hitting that limit and stopped, exactly as designed; the remaining 163.87 HTT was never touched, and a 0.036 HTT premium (10bps of the *filled* amount) was donated to LPs. That's not a bug — a bound is not a target, and this repo says so in its own code comments rather than only in this README. See [Security & trust assumptions](#security--trust-assumptions) for the rest of what this design does and doesn't guarantee.
 
 | | |
 |---|---|
@@ -18,7 +17,6 @@ Haze is a single hook (`src/HazeHook.sol`) plus a Chainlink VRF v2.5 adapter (`s
 | **VRF adapter** | [`0x978ac30c2adF302E86b3815A6d165F2893aF4CE5`](https://sepolia.etherscan.io/address/0x978ac30c2adF302E86b3815A6d165F2893aF4CE5) · Chainlink VRF v2.5 |
 | **Tests** | 47 passing (Foundry) — `forge test` — 99% lines / 97% branches on the hook, 100% lines / 80% branches on the VRF adapter |
 | **Frontend** | `frontend/` — Next.js + RainbowKit + wagmi/viem, real fast-lane execution, commit/settle flow with live VRF status, LP recapture stats, add-liquidity — run locally, no hosted deploy yet |
-| **Gas, measured on-chain** | `commitSwap` 384,481 gas · `settleSwap` 227,732 gas (real Sepolia transaction, not an estimate) |
 
 ---
 
@@ -28,19 +26,16 @@ Haze is a single hook (`src/HazeHook.sol`) plus a Chainlink VRF v2.5 adapter (`s
 
 Every swap through the pool is classified by estimated price impact, computed with the same `SqrtPriceMath` the pool itself swaps with — not a naive amount/liquidity ratio. If a swap (in either exact-input *or* exact-output form — see the fix note below) would move price by more than `RISK_THRESHOLD_BPS` (50 bps), `_beforeSwap` reverts it with `ProtectedSwapRequired`, forcing it through `commitSwap`/`settleSwap` instead. Below that, it's not worth attacking anyway — it executes immediately, no different from a plain v4 swap.
 
-> **Fix applied, not just documented as a gap:** an earlier version only classified exact-input swaps, so the identical trade phrased as exact-output slipped through unprotected entirely. `_beforeSwap` now classifies both; since `commitSwap` is exact-input only, a high-impact exact-output swap simply has no route through this pool at all — it reverts, and the trader has to resubmit as exact-input.
-
 ### 2. Commit — bonded, not free (`commitSwap`)
 
 `commitSwap` snapshots the live pool price, requests randomness from the VRF adapter, and records the intent. It also requires a **0.001 ETH bond** (`COMMIT_BOND`) as `msg.value`.
 
-> **Real vulnerability found and closed during development:** `estimatedImpactBps` is computed from `amountSpecified` as a bare number — nothing checks the caller actually holds or approved that amount. Without a cost attached to the call itself, anyone could pass an arbitrarily large `amountSpecified` to trivially clear the risk threshold and force a paid Chainlink VRF request, for free, in a loop, draining the subscription's LINK balance. The bond makes every request cost real, locked capital instead.
 
 ### 3. Settle — a bound, not a target (`settleSwap`, `directionalCandidatePrice`)
 
-Once the VRF result lands, `settleSwap` picks one of `NUM_CANDIDATES` (5) prices, evenly spaced across `PRICE_BAND_BPS`, and calls `PoolManager.swap` with that price as `sqrtPriceLimitX96`. Because `directionalCandidatePrice` applies its distance to `sqrtPriceX96` directly rather than to the real price (price = sqrtPrice²), the 5 candidates work out to **real price-bps limits of 12/24/36/48/60** — documented as a found-and-explained inconsistency in the code, not left silent. `PRICE_BAND_BPS` was raised from 20 to 30 specifically so the widest candidate (60 bps) clears `RISK_THRESHOLD_BPS` (50 bps) — before that change, no protected trade could *ever* fully fill in one round, because even the best possible draw fell short of the minimum impact needed to qualify for protection in the first place.
+Once the VRF result lands, `settleSwap` picks one of `NUM_CANDIDATES` (5) prices, evenly spaced across `PRICE_BAND_BPS`, and calls `PoolManager.swap` with that price as `sqrtPriceLimitX96`. Because `directionalCandidatePrice` applies its distance to `sqrtPriceX96` directly rather than to the real price (price = sqrtPrice²), the 5 candidates work out to **real price-bps limits of 12/24/36/48/60**. `PRICE_BAND_BPS` is 30 specifically so the widest candidate (60 bps) clears `RISK_THRESHOLD_BPS` (50 bps).
 
-**This does not force the trade to execute at a randomly chosen price** — `sqrtPriceLimitX96` is a boundary the swap cannot cross, not a target it's steered toward. Given fixed liquidity and a fixed requested amount, the execution price itself is close to deterministic; the randomness varies how much room the trade gets before it's cut off, which is what breaks precise sandwich sizing. A future version could derive `amountSpecified` from the chosen candidate price via `SqrtPriceMath` instead, achieving true price-targeting and eliminating partial fills as a side effect — see [Limitations](#limitations--future-work).
+
 
 ### 4. LP recapture (`_recapturePremiumToLPs`)
 
@@ -48,13 +43,13 @@ A `PROTECTED_LANE_FEE_PREMIUM_BPS` (10 bps) premium is charged on the *actually 
 
 ### 5. Bond auto-refund (`_refundBond`, `withdrawBond`)
 
-`settleSwap` and `cancelExpiredSwap` push the bond straight back to the trader (a bounded 30,000-gas transfer) — no separate claim transaction for a normal wallet. If that push fails (a contract wallet with a reverting or gas-hungry `receive()`), the bond is credited to `unclaimedBond` instead of reverting the trade, and `withdrawBond()` recovers it later — a broken refund can never brick the trader's own settlement.
+`settleSwap` and `cancelExpiredSwap` push the bond straight back to the trader (a bounded 30,000-gas transfer) no separate claim transaction for a normal wallet. If that push fails (a contract wallet with a reverting or gas-hungry `receive()`), the bond is credited to `unclaimedBond` instead of reverting the trade, and `withdrawBond()` recovers it later a broken refund can never brick the trader's own settlement.
 
 ---
 
 ## Partner integrations
 
-**Chainlink VRF v2.5** is the only external partner integration in this project — it's what the entire "randomized settlement" mechanism is built on. Exact locations:
+**Chainlink VRF v2.5** is the only external partner integration in this project. it's what the entire "randomized settlement" mechanism is built on. Exact locations:
 
 | What | Where |
 |---|---|
@@ -62,7 +57,7 @@ A `PROTECTED_LANE_FEE_PREMIUM_BPS` (10 bps) premium is charged on the *actually 
 | Requesting randomness from the coordinator | `src/VRFConsumer.sol` — `requestRandomWords` call ([line 60](src/VRFConsumer.sol#L60)) |
 | Receiving the result | `src/VRFConsumer.sol` — `fulfillRandomWords` callback ([line 83](src/VRFConsumer.sol#L83)), called by Chainlink's coordinator, not by this project |
 | The hook's side of the integration | `src/HazeHook.sol` — the `ISwapRandomnessConsumer` interface ([line 15](src/HazeHook.sol#L15)), the hook's reference to it ([line 95](src/HazeHook.sol#L95)), the request call inside `commitSwap` ([line 203](src/HazeHook.sol#L203)), the result read inside `settleSwap` ([line 286](src/HazeHook.sol#L286)) |
-| Wiring to the real coordinator/subscription/key hash | `script/DeployHook.s.sol`, `script/RedeployHook.s.sol` |
+| Wiring to the real coordinator/subscription/key hash | `script/RedeployHook.s.sol` |
 
 Verifiable independently of this repo: the live subscription's real request/fulfillment history is visible on [Chainlink's own VRF dashboard](https://vrf.chain.link/sepolia/46997927598943781172806036110123563029699671687926566697681699947473240716140), and every fulfillment transaction on [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x978ac30c2adF302E86b3815A6d165F2893aF4CE5#events) is sent by Chainlink's coordinator contract, not by this project's own wallets — proof the randomness is genuinely external, not self-rolled.
 
@@ -118,8 +113,6 @@ sequenceDiagram
 | V4 Router | [`0xf13D190e9117920c703d79B5F33732e10049b115`](https://sepolia.etherscan.io/address/0xf13D190e9117920c703d79B5F33732e10049b115) |
 | Chainlink VRF Coordinator | [`0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B`](https://sepolia.etherscan.io/address/0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B) |
 
-This is the **third** hook deployment of this project. A pool's identity includes its hook address, so each contract-level fix (the commit-bond fix, then the auto-refund + wider price band) required a fresh pool alongside it — the two retired hooks and their pools are left untouched on-chain, not migrated, and the LP capital from each was reclaimed (`script/WithdrawStrandedPools.s.sol`) and reused to seed the next one rather than needing fresh testnet funds each time.
-
 ---
 
 ## Build, test & deploy
@@ -142,11 +135,11 @@ All scripts live in `script/`, use `HookMiner` to mine a CREATE2 address matchin
 
 | Script | What it does |
 |---|---|
-| `DeployHook.s.sol` | Deploys a fresh `VRFConsumer` + `HazeHook` pair, wires `consumer.setHook(hook)` |
-| `RedeployHook.s.sol` | Deploys a new `HazeHook` only, reusing an already-funded `VRFConsumer` (repoints it via `setHook` — avoids re-registering a new consumer with the VRF subscription) |
-| `DeployLopsidedPool.s.sol` | Initializes the HTT/WETH pool at a deliberately lopsided 1:10,000 starting price and seeds liquidity |
-| `RedeployPool.s.sol` | Same pool config, pointed at whatever hook `RedeployHook.s.sol` most recently deployed |
+| `RedeployHook.s.sol` | Deploys a new `HazeHook`, reusing an already-funded `VRFConsumer` (repoints it via `setHook` — avoids re-registering a new consumer with the VRF subscription) |
+| `RedeployPool.s.sol` | Initializes the HTT/WETH pool at a deliberately lopsided 1:10,000 starting price and seeds liquidity, pointed at whatever hook `RedeployHook.s.sol` most recently deployed |
 | `WithdrawStrandedPools.s.sol` | Burns LP position NFTs left behind by a hook redeploy and sweeps the underlying tokens back to the deployer for reuse |
+
+The very first deployment used two now-deleted scripts, `DeployHook.s.sol` + `DeployLopsidedPool.s.sol` (deploying a fresh `VRFConsumer` + hook pair, since there was no existing one to reuse yet — see `broadcast/` for that history); every redeploy since reuses the `Redeploy*` scripts above instead.
 
 ```bash
 forge script script/RedeployHook.s.sol \
@@ -196,10 +189,9 @@ src/
   HazeHook.sol           # the hook: risk classification, commit/settle, bond escrow, LP recapture
   VRFConsumer.sol        # Chainlink VRF v2.5 adapter
 script/
-  DeployHook.s.sol / RedeployHook.s.sol       # hook (+ consumer) deployment
-  DeployLopsidedPool.s.sol / RedeployPool.s.sol  # pool init + liquidity seeding
-  WithdrawStrandedPools.s.sol                 # reclaim liquidity from a retired pool
-  AddLiquidity.s.sol / DeployPool.s.sol       # earlier iterations, kept for history
+  RedeployHook.s.sol           # hook (+ consumer) deployment
+  RedeployPool.s.sol           # pool init + liquidity seeding
+  WithdrawStrandedPools.s.sol  # reclaim liquidity from a retired pool
 test/
   HazeHook.t.sol             # unit tests against a mocked PoolManager
   HazeHookIntegration.t.sol  # integration tests against a real v4 PoolManager

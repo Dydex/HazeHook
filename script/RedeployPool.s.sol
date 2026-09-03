@@ -20,8 +20,8 @@ interface IMintable {
     function mint(address to, uint256 amount) external;
 }
 
-/// @notice Same lopsided HTT/WETH pool config as DeployLopsidedPool.s.sol
-///         (1 WETH = 10,000 HTT), but pointed at the NEW HazeHook deployed by
+/// @notice The lopsided HTT/WETH pool config used since the first deployment
+///         (1 WETH = 10,000 HTT), pointed at the NEW HazeHook deployed by
 ///         RedeployHook.s.sol. A pool's identity includes its hook address, so
 ///         this is unavoidably a fresh pool — the old one (still sitting at
 ///         the retired hook) is left untouched, not migrated.
