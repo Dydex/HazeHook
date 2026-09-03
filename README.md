@@ -57,7 +57,7 @@ A `PROTECTED_LANE_FEE_PREMIUM_BPS` (10 bps) premium is charged on the *actually 
 | Requesting randomness from the coordinator | `src/VRFConsumer.sol` — `requestRandomWords` call ([line 60](src/VRFConsumer.sol#L60)) |
 | Receiving the result | `src/VRFConsumer.sol` — `fulfillRandomWords` callback ([line 83](src/VRFConsumer.sol#L83)), called by Chainlink's coordinator, not by this project |
 | The hook's side of the integration | `src/HazeHook.sol` — the `ISwapRandomnessConsumer` interface ([line 15](src/HazeHook.sol#L15)), the hook's reference to it ([line 95](src/HazeHook.sol#L95)), the request call inside `commitSwap` ([line 203](src/HazeHook.sol#L203)), the result read inside `settleSwap` ([line 286](src/HazeHook.sol#L286)) |
-| Wiring to the real coordinator/subscription/key hash | `script/RedeployHook.s.sol` |
+| Wiring to the real coordinator/subscription/key hash | `script/DeployHook.s.sol` |
 
 Verifiable independently of this repo: the live subscription's real request/fulfillment history is visible on [Chainlink's own VRF dashboard](https://vrf.chain.link/sepolia/46997927598943781172806036110123563029699671687926566697681699947473240716140), and every fulfillment transaction on [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x978ac30c2adF302E86b3815A6d165F2893aF4CE5#events) is sent by Chainlink's coordinator contract, not by this project's own wallets — proof the randomness is genuinely external, not self-rolled.
 
@@ -133,18 +133,12 @@ Foundry's newer lint pass can't resolve a bare `test/utils/Deployers.sol` import
 
 All scripts live in `script/`, use `HookMiner` to mine a CREATE2 address matching the hook's permission flags (`beforeSwap` only), and broadcast via a named Foundry keystore account rather than a raw private key.
 
-| Script | What it does |
-|---|---|
-| `RedeployHook.s.sol` | Deploys a new `HazeHook`, reusing an already-funded `VRFConsumer` (repoints it via `setHook` — avoids re-registering a new consumer with the VRF subscription) |
-| `RedeployPool.s.sol` | Initializes the HTT/WETH pool at a deliberately lopsided 1:10,000 starting price and seeds liquidity, pointed at whatever hook `RedeployHook.s.sol` most recently deployed |
-
-The very first deployment used two now-deleted scripts, `DeployHook.s.sol` + `DeployLopsidedPool.s.sol` (deploying a fresh `VRFConsumer` + hook pair, since there was no existing one to reuse yet — see `broadcast/` for that history); every redeploy since reuses the `Redeploy*` scripts above instead.
 
 ```bash
-forge script script/RedeployHook.s.sol \
+forge script script/DeployHook.s.sol \
   --rpc-url <sepolia_rpc> --account <keystore_name> --broadcast
 
-forge script script/RedeployPool.s.sol \
+forge script script/DeployPool.s.sol \
   --rpc-url <sepolia_rpc> --account <keystore_name> --broadcast
 ```
 
@@ -188,8 +182,8 @@ src/
   HazeHook.sol           # the hook: risk classification, commit/settle, bond escrow, LP recapture
   VRFConsumer.sol        # Chainlink VRF v2.5 adapter
 script/
-  RedeployHook.s.sol  # hook (+ consumer) deployment
-  RedeployPool.s.sol  # pool init + liquidity seeding
+  DeployHook.s.sol  # hook (+ consumer) deployment
+  DeployPool.s.sol  # pool init + liquidity seeding
 test/
   HazeHook.t.sol             # unit tests against a mocked PoolManager
   HazeHookIntegration.t.sol  # integration tests against a real v4 PoolManager

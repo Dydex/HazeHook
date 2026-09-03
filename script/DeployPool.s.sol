@@ -22,15 +22,15 @@ interface IMintable {
 
 /// @notice The lopsided HTT/WETH pool config used since the first deployment
 ///         (1 WETH = 10,000 HTT), pointed at the NEW HazeHook deployed by
-///         RedeployHook.s.sol. A pool's identity includes its hook address, so
+///         DeployHook.s.sol. A pool's identity includes its hook address, so
 ///         this is unavoidably a fresh pool — the old one (still sitting at
 ///         the retired hook) is left untouched, not migrated.
-contract RedeployPoolScript is BaseScript, LiquidityHelpers {
+contract DeployPoolScript is BaseScript, LiquidityHelpers {
     address constant TEST_TOKEN = 0xDE8A1613Ee95a0Ee72fF5B72Af2aAdFe6C783F3D;
     address constant WETH = 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14;
-    // Predicted by a dry run of RedeployHook.s.sol's HookMiner.find() call —
+    // Predicted by a dry run of DeployHook.s.sol's HookMiner.find() call —
     // deterministic given HazeHook's bytecode + constructor args + flags, so
-    // this matches whatever RedeployHook.s.sol actually deploys as long as
+    // this matches whatever DeployHook.s.sol actually deploys as long as
     // HazeHook.sol isn't changed again in between.
     address constant HOOK = 0xdE8563cd71256d980AB37c7DeD90671915d30080;
 

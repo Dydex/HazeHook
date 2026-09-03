@@ -17,7 +17,7 @@ import {VRFConsumer} from "../src/VRFConsumer.sol";
 ///      mean re-registering a brand new consumer address with the Chainlink
 ///      VRF subscription on the dashboard, which is a manual step and not
 ///      needed here.
-contract RedeployHookScript is BaseScript {
+contract DeployHookScript is BaseScript {
     address constant EXISTING_VRF_CONSUMER = 0x978ac30c2adF302E86b3815A6d165F2893aF4CE5;
 
     function run() public {
@@ -31,7 +31,7 @@ contract RedeployHookScript is BaseScript {
             HookMiner.find(CREATE2_FACTORY, flags, type(HazeHook).creationCode, constructorArgs);
 
         HazeHook hook = new HazeHook{salt: salt}(poolManager, ISwapRandomnessConsumer(address(consumer)));
-        require(address(hook) == hookAddress, "RedeployHookScript: Hook Address Mismatch");
+        require(address(hook) == hookAddress, "DeployHookScript: Hook Address Mismatch");
 
         consumer.setHook(address(hook));
 
