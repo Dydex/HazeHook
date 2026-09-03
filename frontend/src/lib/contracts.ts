@@ -41,6 +41,7 @@ const POOL_KEY_TUPLE = "(address currency0, address currency1, uint24 fee, int24
 export const HAZE_HOOK_ABI = parseAbi([
   `function RISK_THRESHOLD_BPS() view returns (uint256)`,
   `function PRICE_BAND_BPS() view returns (uint256)`,
+  `function NUM_CANDIDATES() view returns (uint8)`,
   `function COMMIT_BOND() view returns (uint256)`,
   `function unclaimedBond(address) view returns (uint256)`,
   `function estimatedImpactBps(${POOL_KEY_TUPLE} key, bool zeroForOne, int256 amountSpecified) view returns (uint256)`,

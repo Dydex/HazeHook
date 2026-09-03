@@ -53,6 +53,7 @@ export function SwapWidget() {
   const [submittedAmount, setSubmittedAmount] = useState<string | null>("60");
   const [swapId, setSwapId] = useState<bigint | null>(null);
   const [settled, setSettled] = useState(false);
+  const [settledCandidateIndex, setSettledCandidateIndex] = useState<number | null>(null);
   const [commitDeadline, setCommitDeadline] = useState<bigint | null>(null);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const [rateFlipped, setRateFlipped] = useState(false);
@@ -131,6 +132,24 @@ export function SwapWidget() {
   // User-selected slippage overrides the hook's recommendation once set;
   // falls back to the recommendation (or a sane 0.5% default) otherwise.
   const effectiveSlippageBps = BigInt(customSlippageBps ?? Number(recommendedSlippageBps ?? BigInt(50)));
+
+  // Static contract constants, fetched once — used to translate a settled
+  // swap's candidateIndex into the real price-bps boundary that applied.
+  // (directionalCandidatePrice applies its distance to sqrtPriceX96 directly,
+  // not the underlying price, so real bps = 2x the nominal distance.)
+  const { data: bandConstants } = useReadContracts({
+    contracts: [
+      { address: HAZE_HOOK_ADDRESS, abi: HAZE_HOOK_ABI, functionName: "PRICE_BAND_BPS" },
+      { address: HAZE_HOOK_ADDRESS, abi: HAZE_HOOK_ABI, functionName: "NUM_CANDIDATES" },
+    ],
+  });
+  const priceBandBps = bandConstants?.[0]?.result as bigint | undefined;
+  const numCandidates = bandConstants?.[1]?.result as bigint | undefined;
+
+  function realBpsForCandidate(candidateIndex: number): number | null {
+    if (priceBandBps === undefined || numCandidates === undefined) return null;
+    return Number((BigInt(candidateIndex + 1) * priceBandBps * BigInt(2)) / numCandidates);
+  }
 
   // --- Expected output — only resolvable for fast-lane amounts. The Quoter
   // simulates a real swap through the pool, which goes through HazeHook's
@@ -302,12 +321,24 @@ export function SwapWidget() {
   const settle = useWriteContract();
   const settleReceipt = useWaitForTransactionReceipt({ hash: settle.data });
   useEffect(() => {
+    if (!settleReceipt.data) return;
     if (settleReceipt.isSuccess) {
       setSettled(true);
       refetchInputBalance();
+      for (const log of settleReceipt.data.logs) {
+        try {
+          const decoded = decodeEventLog({ abi: HAZE_HOOK_ABI, data: log.data, topics: log.topics });
+          if (decoded.eventName === "SwapSettled") {
+            setSettledCandidateIndex(Number(decoded.args.candidateIndex));
+            break;
+          }
+        } catch {
+          // not our event, ignore
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settleReceipt.isSuccess]);
+  }, [settleReceipt.data, settleReceipt.isSuccess]);
 
   function doSettle() {
     if (swapId === null) return;
@@ -340,6 +371,7 @@ export function SwapWidget() {
   function reset() {
     setSwapId(null);
     setSettled(false);
+    setSettledCandidateIndex(null);
     setCommitDeadline(null);
   }
 
@@ -750,6 +782,15 @@ export function SwapWidget() {
                 <span className="h-1.5 w-1.5 rounded-full bg-current" />
                 Swap settled
               </div>
+              {settledCandidateIndex !== null && (
+                <div className="flex items-center gap-2 rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-violet-300">
+                  <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                  VRF drew candidate {settledCandidateIndex + 1} of {numCandidates?.toString() ?? "5"}
+                  {realBpsForCandidate(settledCandidateIndex) !== null && (
+                    <span className="text-zinc-500"> — ±{realBpsForCandidate(settledCandidateIndex)}bps price limit</span>
+                  )}
+                </div>
+              )}
               {settleReceipt.data && (
                 <a
                   href={explorerTxLink(settleReceipt.data.transactionHash)}
